@@ -7,13 +7,15 @@ from src.db.postgres import Database
 from src.lib.logger import logger
 
 
-def get_products_from_azure():
+def get_products_from_azure(limit: int | None = None):
     logger.info("Starting Azure product scraper")
 
     scraper = AzureScraper()
 
-    logger.info("Retrieving all products...")
-    all_products = scraper.get_all_products()
+    logger.info(
+        f"Retrieving {'up to ' + str(limit) if limit else 'all'} products..."
+    )
+    all_products = scraper.get_all_products(limit=limit)
     logger.debug(f"Retrieved {len(all_products)} products")
 
     logger.info("Formatting products...")

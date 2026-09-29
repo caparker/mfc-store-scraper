@@ -121,14 +121,18 @@ class AzureScraper:
         )
         return self._post("products", params)
 
-    def get_all_products(self):
+    def get_all_products(self, limit: int | None = None):
         """Get all Azure products"""
         hits = []
         seen_ids = set()
         for category in self.get_d1_categories():
+            if limit and len(hits) >= limit:
+                break
             page = 0
             num_pages = 1
             while page < num_pages:
+                if limit and len(hits) >= limit:
+                    break
 
                 category_id = category.get("id")
                 ancestors = category.get("ancestors") or [{"slug": "Root"}]
@@ -141,11 +145,9 @@ class AzureScraper:
                 _hits = resp.get("hits")
 
                 for hit in _hits:
+                    if limit and len(hits) >= limit:
+                        break
                     if hit.get("id") in seen_ids:
-                        ## this is preventing duplicates from products that exist in more than one category (many)
-                        ## that means we are missing categories for a product so we may want to think about a way to
-                        ## aggregate the categories here in the futre
-                        ## print(f"We have already seen this one: {category_name}/{hit.get('name')}")
                         continue
                     seen_ids.add(hit.get("id"))
                     hit["category"] = category_name

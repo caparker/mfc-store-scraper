@@ -13,9 +13,13 @@ app = typer.Typer()
 
 
 @app.command()
-def scrape():
-    """Scrape all products from Azure Standard into the DB."""
-    get_products_from_azure()
+def scrape(
+    limit: int = typer.Option(
+        None, "--limit", "-l", help="Limit total products scraped (dev use)"
+    ),
+):
+    """Scrape products from Azure Standard into the DB."""
+    get_products_from_azure(limit=limit)
 
 
 @app.command()
