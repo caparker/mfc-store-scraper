@@ -46,7 +46,7 @@ Run `uv run python -m main --help` to see the full list.
 | `run` | Run the full pipeline: scrape → create new → update dirty products → update dirty variants → dump DB. |
 | `status` | Show a summary of items pending sync to Shopify. `--verbose` also shows samples. |
 | `sync-products` | Create new products and push dirty ones to Shopify. `--only new` or `--only dirty` to restrict. `--no-draft` creates new products as ACTIVE. |
-| `pull-status` | Reconcile local status with Shopify: pull each product's status, mark rows whose product was deleted in Shopify as `DELETED`, and report orphans (Shopify products with vendor Azure Standard but no DB row). `--dry-run` reports only. |
+| `pull-status` | Reconcile local status with Shopify: pull each product's status, mark rows whose product was deleted in Shopify as `DELETED`, and report orphans (Shopify products with vendor Azure Standard but no DB row) and duplicates (orphans whose `internal.id` metafield names an Azure product the DB links to a different Shopify product). `--delete-duplicates` deletes non-ACTIVE duplicates from Shopify; add `--include-active` to delete ACTIVE ones too. `--dry-run` reports only. |
 | `set-status <ACTIVE\|DRAFT\|ARCHIVED>` | Set `shopify_status` for one product (`--product-id`) or all products not already in that status, and push to Shopify. `--no-push` only marks rows dirty. |
 | `sync-product <id>` | Push a single product (and its variants) to Shopify. |
 | `sync-variants` | Push dirty packaging rows to Shopify (price, cost, stock). |
@@ -101,6 +101,8 @@ uv run python -m main sync-variants --product-id 12345
 Each scrape upserts rows into `azure.products` and `azure.packaging`. A trigger (`azure.set_updated_at_if_changed`) only bumps `updated_at` and records `last_changed_fields` when a tracked column actually changes.
 
 `shopify_status` lives in `azure.products` and is the source of truth for product status: it is sent on every product update, so a status changed by hand in the Shopify admin is overwritten on the next dirty push. Change it with `set-status`, or run `pull-status` to adopt whatever Shopify currently has. `pull-status` does not mark rows dirty, and it overwrites any local status change that has not been pushed yet.
+
+If `sync-products` tries to create a product whose handle already exists in Shopify (typically after a DB rebuild lost the Shopify ids), it adopts the existing product instead: the Shopify product's `internal.id` metafield must equal the Azure product id, then `shopify_product_id` and `shopify_status` are recorded and variants are linked to `azure.packaging` by SKU (`AZ-<code>`). The row is left dirty so the next update pushes the DB state.
 
 `DELETED` is a local-only status set by `pull-status` when the Shopify product no longer exists. Rows in that state are excluded from every push and from the dirty counts in `status`. To recreate such a product, clear its `shopify_product_id`; it will then be picked up as new.
 

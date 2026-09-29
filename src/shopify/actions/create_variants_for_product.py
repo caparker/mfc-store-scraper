@@ -114,6 +114,10 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
 
         variant_input.append(packaging_input.model_dump())
 
+    if not variant_input:
+        logger.debug(f"No variants to create for product {product.id}")
+        return sorted_packaging
+
     shopify = Shopify()
 
     raw_variant_create_response = shopify.query_file(

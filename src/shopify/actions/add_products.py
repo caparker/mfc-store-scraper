@@ -8,9 +8,11 @@ from src.db.models.product import ProductModel
 from src.db.postgres import Database
 from src.lib.logger import logger
 from src.shopify.actions import (
+    adopt_product,
     create_product,
     create_variants_for_product,
     ProductCreateError,
+    ProductHandleInUseError,
     ProductVariantCreateError,
 )
 from src.shopify.types.models.product import ProductStatus
@@ -58,21 +60,37 @@ def add_products(
         return
 
     created = 0
+    adopted = 0
     failed = 0
 
-    def _task(product: ProductModel):
-        created_product = create_product(product, status=status)
+    def _task(product: ProductModel) -> bool:
+        """Create the product, or adopt it if Shopify already has our handle.
+
+        Returns True when the product was adopted rather than created.
+        """
+        try:
+            created_product = create_product(product, status=status)
+            was_adopted = False
+        except ProductHandleInUseError:
+            logger.warning(
+                f"Handle '{product.slug}' already exists in Shopify; adopting it"
+            )
+            created_product = adopt_product(product)
+            was_adopted = True
         create_variants_for_product(created_product)
-        return product
+        return was_adopted
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_task, p): p for p in products}
         for fut in as_completed(futures):
             product = futures[fut]
             try:
-                fut.result()
-                logger.debug(f"Created {product.name}")
-                created += 1
+                if fut.result():
+                    logger.debug(f"Adopted {product.name}")
+                    adopted += 1
+                else:
+                    logger.debug(f"Created {product.name}")
+                    created += 1
             except ProductCreateError as e:
                 logger.error(f"Product create failed for {product.name}: {e.message}")
                 failed += 1
@@ -86,4 +104,6 @@ def add_products(
                 logger.error(f"Failed to create {product.name}: {e}")
                 failed += 1
 
-    logger.success(f"Product create complete: {created} created, {failed} failed")
+    logger.success(
+        f"Product create complete: {created} created, {adopted} adopted, {failed} failed"
+    )

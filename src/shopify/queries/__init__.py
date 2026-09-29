@@ -38,3 +38,7 @@ class Queries:
     products_by_ids = Path(
         os.path.join(_query_directory, "products_by_ids.graphql")
     ).read_text(encoding="utf-8")
+
+    product_by_handle = Path(
+        os.path.join(_query_directory, "product_by_handle.graphql")
+    ).read_text(encoding="utf-8")

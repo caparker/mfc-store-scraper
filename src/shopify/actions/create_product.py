@@ -28,6 +28,17 @@ class ProductCreateError(Exception):
         super().__init__(self.message)
 
 
+class ProductHandleInUseError(ProductCreateError):
+    """Shopify already has a product with this handle; see adopt_product."""
+
+
+def _handle_in_use(user_errors) -> bool:
+    return any(
+        "handle" in error.field and "already in use" in error.message
+        for error in user_errors
+    )
+
+
 def create_product(
     product: ProductModel,
     status: ProductStatus = ProductStatus.DRAFT,
@@ -85,7 +96,10 @@ def create_product(
         logger.error(product_create_response.model_dump_json())
         raise ProductCreateError(message=product_create_response.model_dump_json())
 
-    if len(product_create_response.data.productCreate.userErrors):
+    user_errors = product_create_response.data.productCreate.userErrors
+    if len(user_errors):
+        if _handle_in_use(user_errors):
+            raise ProductHandleInUseError(message=product_create_response.model_dump_json())
         logger.error(product_create_response.model_dump_json())
         raise ProductCreateError(message=product_create_response.model_dump_json())
 

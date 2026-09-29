@@ -27,6 +27,10 @@ class Mutations:
         os.path.join(_query_directory, "product_update.graphql")
     ).read_text(encoding="utf-8")
 
+    product_delete = Path(
+        os.path.join(_query_directory, "product_delete.graphql")
+    ).read_text(encoding="utf-8")
+
     product_variants_bulk_create = Path(
         os.path.join(_query_directory, "product_variants_bulk_create.graphql")
     ).read_text(encoding="utf-8")

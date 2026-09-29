@@ -144,14 +144,32 @@ def set_status(
 @app.command()
 def pull_status(
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Report differences without writing to the DB"
+        False, "--dry-run", help="Report differences without writing anywhere"
+    ),
+    delete_duplicates: bool = typer.Option(
+        False, "--delete-duplicates",
+        help="Delete non-ACTIVE Shopify duplicates of products the DB links elsewhere",
+    ),
+    include_active: bool = typer.Option(
+        False, "--include-active",
+        help="With --delete-duplicates, also delete ACTIVE duplicates",
     ),
 ):
-    """Reconcile local product status with Shopify: pull statuses, mark deleted, report orphans."""
-    counts = pull_product_status(dry_run=dry_run)
-    typer.echo(f"  status changes:  {counts['changed']:>6}")
-    typer.echo(f"  deleted:         {counts['deleted']:>6}")
-    typer.echo(f"  orphans:         {counts['orphans']:>6}")
+    """Reconcile local product status with Shopify: pull statuses, mark deleted, report orphans and duplicates."""
+    if include_active and not delete_duplicates:
+        typer.echo("--include-active requires --delete-duplicates", err=True)
+        raise typer.Exit(code=1)
+
+    counts = pull_product_status(
+        dry_run=dry_run,
+        delete_duplicates=delete_duplicates,
+        include_active=include_active,
+    )
+    typer.echo(f"  status changes:      {counts['changed']:>6}")
+    typer.echo(f"  deleted in Shopify:  {counts['deleted']:>6}")
+    typer.echo(f"  orphans:             {counts['orphans']:>6}")
+    typer.echo(f"  duplicates:          {counts['duplicates']:>6}")
+    typer.echo(f"  duplicates deleted:  {counts['duplicates_deleted']:>6}")
 
 
 @app.command()

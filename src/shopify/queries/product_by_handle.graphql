@@ -1,0 +1,17 @@
+query ProductByHandle($handle: String!) {
+  productByIdentifier(identifier: { handle: $handle }) {
+    id
+    status
+    handle
+    vendor
+    metafield(namespace: "internal", key: "id") {
+      value
+    }
+    variants(first: 100) {
+      nodes {
+        id
+        sku
+      }
+    }
+  }
+}

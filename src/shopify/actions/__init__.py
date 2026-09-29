@@ -1,7 +1,12 @@
 """General actions that can be taken against Shopify"""
 
 from .create_media import create_media
-from .create_product import create_product, ProductCreateError
+from .create_product import (
+    create_product,
+    ProductCreateError,
+    ProductHandleInUseError,
+)
+from .adopt_product import adopt_product
 from .create_variants_for_product import (
     create_variants_for_product,
     ProductVariantCreateError,
@@ -20,6 +25,8 @@ __all__ = [
     "create_media",
     "create_product",
     "ProductCreateError",
+    "ProductHandleInUseError",
+    "adopt_product",
     "create_variants_for_product",
     "ProductVariantCreateError",
     "update_variant",

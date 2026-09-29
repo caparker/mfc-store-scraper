@@ -10,6 +10,9 @@ query ProductsStatusPage($first: Int!, $after: String, $query: String) {
       handle
       status
       vendor
+      metafield(namespace: "internal", key: "id") {
+        value
+      }
     }
   }
 }
