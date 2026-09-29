@@ -1,10 +1,11 @@
-"""End-to-end pipeline: scrape -> sync products -> sync variants -> dump."""
+"""End-to-end pipeline: scrape -> sync products -> sync variants -> sync stock -> dump."""
 
 from src.azure.cli.get_products_from_azure import get_products_from_azure
 from .dump_database import dump_database
 from .add_products import add_products
 from .update_products import update_products
 from .update_variants import update_variants
+from .update_stock import update_stock
 from src.lib.logger import logger
 
 
@@ -26,6 +27,9 @@ def run_pipeline() -> None:
 
     _section("Updating dirty variants in Shopify")
     update_variants()
+
+    _section("Updating stock in Shopify")
+    update_stock()
 
     _section("Dumping database")
     dump_database()

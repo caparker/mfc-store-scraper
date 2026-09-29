@@ -109,7 +109,6 @@ class AzureScraper:
         params = urlencode(
             {
                 "query": "",
-                "filters": "packaging.stock > 0",
                 "attributesToHighlight": "",
                 "attributesToRetrieve": ",".join(ATTRIBUTES_TO_RETRIEVE),
                 "queryType": "prefixNone",

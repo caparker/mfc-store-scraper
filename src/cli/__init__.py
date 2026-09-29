@@ -6,6 +6,7 @@ from src.shopify.actions import (
     add_products,
     update_products,
     update_variants,
+    update_stock,
     dump_database,
     run_pipeline,
     set_product_status,
@@ -34,7 +35,7 @@ def check_connection():
 
 @app.command()
 def run():
-    """Run the full pipeline: scrape → sync products → sync variants → dump."""
+    """Run the full pipeline: scrape → sync products → sync variants → sync stock → dump."""
     run_pipeline()
 
 
@@ -63,8 +64,32 @@ def sync_variants(
         None, "--limit", help="Only process the first N rows"
     ),
 ):
-    """Push dirty azure.packaging rows to Shopify (variant-level price)."""
+    """Push dirty azure.packaging rows to Shopify (price, cost, inventory policy). Stock is sync-stock."""
     update_variants(
+        packaging_code=packaging_code,
+        product_id=product_id,
+        max_workers=max_workers,
+        limit=limit,
+    )
+
+
+@app.command()
+def sync_stock(
+    packaging_code: str = typer.Option(
+        None, "--packaging-code", help="Only push this azure.packaging.code"
+    ),
+    product_id: int = typer.Option(
+        None, "--product-id", help="Push all variants for this azure.products.id"
+    ),
+    max_workers: int = typer.Option(
+        3, "--max-workers", help="Number of parallel Shopify requests"
+    ),
+    limit: int = typer.Option(
+        None, "--limit", help="Only process the first N rows"
+    ),
+):
+    """Push changed stock to Shopify in batches of 250 variants."""
+    update_stock(
         packaging_code=packaging_code,
         product_id=product_id,
         max_workers=max_workers,
@@ -190,6 +215,7 @@ def status(
     typer.echo(f"  products dirty:  {counts['products_dirty']:>6}")
     typer.echo(f"  variants new:    {counts['variants_new']:>6}")
     typer.echo(f"  variants dirty:  {counts['variants_dirty']:>6}")
+    typer.echo(f"  stock dirty:     {counts['stock_dirty']:>6}")
     typer.echo(f"  total pending:   {total:>6}")
     typer.echo(f"  products deleted in Shopify (not synced): {counts['products_deleted']}")
 
@@ -219,6 +245,11 @@ def status(
         for pack_id, code, name, changed in samples["variants_dirty"]:
             fields = ", ".join(changed) if changed else "?"
             typer.echo(f"  [{pack_id}] {code}  {name}  ({fields})")
+
+    if samples["stock_dirty"]:
+        typer.echo("\nStock to push:")
+        for pack_id, code, name, stock, shopify_stock in samples["stock_dirty"]:
+            typer.echo(f"  [{pack_id}] {code}  {name}  ({shopify_stock} -> {stock})")
 
 
 __all__ = ["app"]

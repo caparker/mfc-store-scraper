@@ -36,6 +36,19 @@ class Database:
                 curs.execute(query, data)
                 return curs.fetchone()
 
+    def execute(self, query, data=None) -> int:
+        """Run a single statement and return the affected row count"""
+        with psycopg.connect(
+            dbname=settings.db_name,
+            user=settings.db_username,
+            password=settings.db_password,
+            port=settings.db_port,
+            host=settings.db_host,
+        ) as conn:
+            with conn.cursor() as curs:
+                curs.execute(query, data)
+                return curs.rowcount
+
     def batch_execute(self, sql, data):
         """
         Helper to run multiple queries in a row

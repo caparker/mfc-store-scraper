@@ -45,7 +45,14 @@ def sync_status() -> dict[str, int]:
                          pack.updated_at,
                          COALESCE(lp.created_at, 'epoch'::timestamptz)
                        )
-                  )) AS variants_dirty
+                  )) AS variants_dirty,
+
+            (SELECT count(*) FROM azure.packaging pack
+                JOIN azure.products prod ON prod.id = pack.products_id
+                WHERE pack.shopify_variant_id IS NOT NULL
+                  AND prod.shopify_product_id IS NOT NULL
+                  AND prod.shopify_status <> 'DELETED'
+                  AND pack.stock IS DISTINCT FROM pack.shopify_stock) AS stock_dirty
     """)
 
     row = db.fetchone(counts_query, {})
@@ -55,6 +62,7 @@ def sync_status() -> dict[str, int]:
         "products_deleted": row[2],
         "variants_new": row[3],
         "variants_dirty": row[4],
+        "stock_dirty": row[5],
     }
 
 
@@ -127,9 +135,25 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
         {"limit": limit},
     )
 
+    stock_dirty = db.fetchall(
+        sql.SQL("""
+            SELECT pack.id, pack.code, prod.name, pack.stock, pack.shopify_stock
+            FROM azure.packaging pack
+            JOIN azure.products prod ON prod.id = pack.products_id
+            WHERE pack.shopify_variant_id IS NOT NULL
+              AND prod.shopify_product_id IS NOT NULL
+              AND prod.shopify_status <> 'DELETED'
+              AND pack.stock IS DISTINCT FROM pack.shopify_stock
+            ORDER BY prod.id, pack.code
+            LIMIT %(limit)s
+        """),
+        {"limit": limit},
+    )
+
     return {
         "products_new": products_new,
         "products_dirty": products_dirty,
         "variants_new": variants_new,
         "variants_dirty": variants_dirty,
+        "stock_dirty": stock_dirty,
     }

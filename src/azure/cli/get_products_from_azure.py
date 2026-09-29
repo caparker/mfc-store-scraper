@@ -58,8 +58,8 @@ def get_products_from_azure(limit: int | None = None):
 
     packaging_query = sql.SQL(
         """
-        INSERT INTO azure.packaging (products_id, code, size, weight, stock, rewards_enabled, freight_handling_required, tags, primary_category,favorites,next_purchase_arrival)
-        VALUES (%(products_id)s,%(code)s,%(size)s,%(weight)s,%(stock)s,%(rewards_enabled)s,%(freight_handling_required)s,%(tags)s,%(primary_category)s,%(favorites)s,%(next_purchase_arrival)s)
+        INSERT INTO azure.packaging (products_id, code, size, weight, stock, rewards_enabled, freight_handling_required, tags, primary_category,favorites,next_purchase_arrival, last_seen_at)
+        VALUES (%(products_id)s,%(code)s,%(size)s,%(weight)s,%(stock)s,%(rewards_enabled)s,%(freight_handling_required)s,%(tags)s,%(primary_category)s,%(favorites)s,%(next_purchase_arrival)s, now())
         ON CONFLICT(code)
         DO UPDATE SET
             size = EXCLUDED.size,
@@ -70,13 +70,33 @@ def get_products_from_azure(limit: int | None = None):
             tags = EXCLUDED.tags,
             primary_category = EXCLUDED.primary_category,
             favorites = EXCLUDED.favorites,
-            next_purchase_arrival = EXCLUDED.next_purchase_arrival;
+            next_purchase_arrival = EXCLUDED.next_purchase_arrival,
+            last_seen_at = now();
     """
     )
 
     logger.info("Inserting packaging...")
     database.batch_execute(packaging_query, formatted_packaging)
     logger.info(f"Inserted {len(formatted_packaging)} packaging records")
+
+    if limit is None:
+        # A full scrape returned every packaging Azure still lists. Anything not
+        # touched by this run is gone from Azure, so it has no stock. All rows in
+        # the batch above share one transaction timestamp, so max(last_seen_at)
+        # identifies this run. Skipped under --limit, which is a partial scrape.
+        zeroed = database.execute(
+            sql.SQL(
+                """
+                UPDATE azure.packaging
+                SET stock = 0
+                WHERE stock <> 0
+                  AND last_seen_at IS DISTINCT FROM (
+                    SELECT max(last_seen_at) FROM azure.packaging
+                  )
+                """
+            )
+        )
+        logger.info(f"Zeroed stock on {zeroed} packaging record(s) no longer listed by Azure")
 
     # pylint: disable=fixme
     # TODO: Only insert prices for existing packages

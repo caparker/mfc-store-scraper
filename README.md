@@ -43,13 +43,14 @@ Run `uv run python -m main --help` to see the full list.
 
 | Command | Description |
 | --- | --- |
-| `run` | Run the full pipeline: scrape → create new → update dirty products → update dirty variants → dump DB. |
+| `run` | Run the full pipeline: scrape → create new → update dirty products → update dirty variants → push changed stock → dump DB. |
 | `status` | Show a summary of items pending sync to Shopify. `--verbose` also shows samples. |
 | `sync-products` | Create new products and push dirty ones to Shopify. `--only new` or `--only dirty` to restrict. `--no-draft` creates new products as ACTIVE. |
 | `pull-status` | Reconcile local status with Shopify: pull each product's status, mark rows whose product was deleted in Shopify as `DELETED`, and report orphans (Shopify products with vendor Azure Standard but no DB row) and duplicates (orphans whose `internal.id` metafield names an Azure product the DB links to a different Shopify product). `--delete-duplicates` deletes non-ACTIVE duplicates from Shopify; add `--include-active` to delete ACTIVE ones too. `--dry-run` reports only. |
 | `set-status <ACTIVE\|DRAFT\|ARCHIVED>` | Set `shopify_status` for one product (`--product-id`) or all products not already in that status, and push to Shopify. `--no-push` only marks rows dirty. |
 | `sync-product <id>` | Push a single product (and its variants) to Shopify. |
-| `sync-variants` | Push dirty packaging rows to Shopify (price, cost, stock). |
+| `sync-variants` | Push dirty packaging rows to Shopify (price, cost, inventory policy). |
+| `sync-stock` | Push changed stock to Shopify, 250 variants per request. |
 | `sync-handles` | Update Shopify product handles from DB values. |
 | `dump-db` | Dump the Postgres database to a timestamped SQL file. |
 
@@ -91,14 +92,19 @@ uv run python -m main pull-status
 uv run python -m main set-status active
 ```
 
-**Update prices/stock for a single product:**
+**Update prices or stock for a single product:**
 ```bash
 uv run python -m main sync-variants --product-id 12345
+uv run python -m main sync-stock --product-id 12345
 ```
 
 ## How dirty tracking works
 
-Each scrape upserts rows into `azure.products` and `azure.packaging`. A trigger (`azure.set_updated_at_if_changed`) only bumps `updated_at` and records `last_changed_fields` when a tracked column actually changes.
+Each scrape upserts rows into `azure.products` and `azure.packaging`. A trigger (`azure.set_updated_at_if_changed`) only bumps `updated_at` and records `last_changed_fields` when a tracked column actually changes. On `azure.packaging`, only `size` is tracked, since it is the only packaging column sent on a variant update; a new `azure.prices` row also makes the variant dirty. `stock` has its own sync, and the remaining columns are never sent to Shopify.
+
+**Stock** is compared directly: a row is stock-dirty when `stock` differs from `shopify_stock`, the last value pushed. `sync-stock` sends dirty rows through `inventorySetOnHandQuantities` in batches of 250 across products, so a full catalog push is under 70 requests. Variants use `inventoryPolicy: DENY`, so an out-of-stock variant cannot be ordered.
+
+A full scrape (no `--limit`) stamps `last_seen_at` on every packaging row it returns and then sets `stock = 0` on rows it did not return, since Azure no longer lists them. Partial scrapes skip this step.
 
 `shopify_status` lives in `azure.products` and is the source of truth for product status: it is sent on every product update, so a status changed by hand in the Shopify admin is overwritten on the next dirty push. Change it with `set-status`, or run `pull-status` to adopt whatever Shopify currently has. `pull-status` does not mark rows dirty, and it overwrites any local status change that has not been pushed yet.
 

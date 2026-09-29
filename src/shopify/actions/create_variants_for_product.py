@@ -102,7 +102,7 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
         packaging_input = ProductVariantsBulkInput(
             compareAtPrice=None,
             inventoryItem=InventoryItemInput(cost=cost, sku=f"AZ-{pack.code}"),
-            inventoryPolicy=ProductVariantInventoryPolicy.CONTINUE_SELLING,
+            inventoryPolicy=ProductVariantInventoryPolicy.DENY,
             optionValues=[VariantOptionValueInput(name=pack.size)],
             mediaId=shopify_media_id,
             price=f"{round(packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)), 2):.2f}",

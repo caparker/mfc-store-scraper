@@ -70,7 +70,7 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
     packaging_input = ProductVariantsBulkInput(
         id=packaging.shopify_variant_id,
         compareAtPrice=None,
-        inventoryPolicy=ProductVariantInventoryPolicy.CONTINUE_SELLING,
+        inventoryPolicy=ProductVariantInventoryPolicy.DENY,
         optionValues=[VariantOptionValueInput(name=packaging.size)],
         mediaId=None,
         price=f"{packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)):.2f}",

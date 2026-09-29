@@ -103,6 +103,10 @@ CREATE TABLE IF NOT EXISTS azure.packaging (
     favorites INTEGER,
     next_purchase_arrival TIMESTAMPTZ,
     last_changed_fields TEXT[],
+    -- Last time a scrape returned this row; rows absent from a full scrape get stock = 0.
+    last_seen_at TIMESTAMPTZ,
+    -- Last stock value pushed to Shopify; stock is dirty when it differs.
+    shopify_stock INTEGER,
     shopify_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
@@ -110,13 +114,24 @@ CREATE TABLE IF NOT EXISTS azure.packaging (
     UNIQUE(products_id, size)
 );
 
+-- Existing databases were created before these columns existed.
+ALTER TABLE azure.packaging
+    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ
+    , ADD COLUMN IF NOT EXISTS shopify_stock INTEGER;
+
+-- Only columns that reach Shopify mark a variant dirty: in practice `size`
+-- (the option value) plus a new price row. stock has its own sync (stock vs
+-- shopify_stock); every other column here is never sent to Shopify.
 CREATE OR REPLACE TRIGGER packaging_set_updated_at
 BEFORE UPDATE ON azure.packaging
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at_if_changed(
     'updated_at', 'created_at',
     'shopify_updated_at', 'shopify_variant_id', 'shopify_inventory_item_id',
-    'last_changed_fields'
+    'last_changed_fields',
+    'stock', 'shopify_stock', 'next_purchase_arrival', 'last_seen_at',
+    'tags', 'weight', 'favorites',
+    'primary_category', 'rewards_enabled', 'freight_handling_required'
 );
 
 
