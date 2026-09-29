@@ -7,10 +7,13 @@ from src.shopify.actions import (
     update_products,
     update_variants,
     dump_database,
-    run_pipeline
+    run_pipeline,
+    set_product_status,
+    pull_product_status,
 )
 from src.cli.actions.status import sync_status, sync_samples
 from src.shopify.shopify import Shopify, ShopifyConnectionError
+from src.shopify.types.models.product import ProductStatus
 
 
 app = typer.Typer()
@@ -83,6 +86,10 @@ def sync_products(
     limit: int = typer.Option(
         None, "--limit", help="Only process the first N rows"
     ),
+    draft: bool = typer.Option(
+        True, "--draft/--no-draft",
+        help="Create new products as DRAFT (default) or ACTIVE",
+    ),
 ):
     """Create new products and push dirty ones to Shopify."""
     if only not in (None, "new", "dirty"):
@@ -90,10 +97,61 @@ def sync_products(
         raise typer.Exit(code=1)
 
     if only in (None, "new"):
-        add_products(product_id=product_id, max_workers=max_workers, limit=limit)
+        add_products(
+            product_id=product_id,
+            max_workers=max_workers,
+            limit=limit,
+            status=ProductStatus.DRAFT if draft else ProductStatus.ACTIVE,
+        )
 
     if only in (None, "dirty"):
         update_products(product_id=product_id, max_workers=max_workers, limit=limit)
+
+
+@app.command()
+def set_status(
+    status: ProductStatus = typer.Argument(
+        ..., case_sensitive=False, help="ACTIVE, DRAFT, or ARCHIVED"
+    ),
+    product_id: int = typer.Option(
+        None, "--product-id", help="Only change this azure.products.id"
+    ),
+    push: bool = typer.Option(
+        True, "--push/--no-push",
+        help="Push the change to Shopify now (default) or just mark rows dirty",
+    ),
+    max_workers: int = typer.Option(
+        5, "--max-workers", help="Number of parallel Shopify requests"
+    ),
+):
+    """Set the Shopify status of one product, or of every product not already in that status."""
+    if status is ProductStatus.DELETED:
+        typer.echo("DELETED is set by pull-status, not by hand", err=True)
+        raise typer.Exit(code=1)
+
+    changed = set_product_status(
+        status=status,
+        product_id=product_id,
+        push=push,
+        max_workers=max_workers,
+    )
+    if changed and not push:
+        typer.echo(
+            f"{changed} product(s) marked dirty; run `sync-products --only dirty` to push"
+        )
+
+
+@app.command()
+def pull_status(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report differences without writing to the DB"
+    ),
+):
+    """Reconcile local product status with Shopify: pull statuses, mark deleted, report orphans."""
+    counts = pull_product_status(dry_run=dry_run)
+    typer.echo(f"  status changes:  {counts['changed']:>6}")
+    typer.echo(f"  deleted:         {counts['deleted']:>6}")
+    typer.echo(f"  orphans:         {counts['orphans']:>6}")
 
 
 @app.command()
@@ -107,7 +165,7 @@ def status(
 ):
     """Show a summary of items pending sync to Shopify."""
     counts = sync_status()
-    total = sum(counts.values())
+    total = sum(v for k, v in counts.items() if k != "products_deleted")
 
     typer.echo("Sync status:")
     typer.echo(f"  products new:    {counts['products_new']:>6}")
@@ -115,6 +173,7 @@ def status(
     typer.echo(f"  variants new:    {counts['variants_new']:>6}")
     typer.echo(f"  variants dirty:  {counts['variants_dirty']:>6}")
     typer.echo(f"  total pending:   {total:>6}")
+    typer.echo(f"  products deleted in Shopify (not synced): {counts['products_deleted']}")
 
     if not verbose:
         return

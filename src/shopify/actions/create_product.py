@@ -28,8 +28,11 @@ class ProductCreateError(Exception):
         super().__init__(self.message)
 
 
-def create_product(product: ProductModel) -> ProductModel:
-    """Function for creating a product and adding initial size option"""
+def create_product(
+    product: ProductModel,
+    status: ProductStatus = ProductStatus.DRAFT,
+) -> ProductModel:
+    """Create a product in Shopify with the given status and an initial size option"""
 
     if product.shopify_product_id:
         return product
@@ -48,7 +51,7 @@ def create_product(product: ProductModel) -> ProductModel:
         descriptionHtml=product.description,
         handle=product.slug,
         productType=secondary_category,
-        status=ProductStatus.DRAFT,
+        status=status,
         productOptions=[
             OptionCreateInput(
                 name="Size",
@@ -95,6 +98,7 @@ def create_product(product: ProductModel) -> ProductModel:
             UPDATE azure.products
             SET
                 shopify_product_id = %(shopify_product_id)s,
+                shopify_status = %(shopify_status)s,
                 shopify_updated_at = now()
             WHERE id = %(product_id)s;
         """),
@@ -102,10 +106,12 @@ def create_product(product: ProductModel) -> ProductModel:
             {
                 "product_id": product.id,
                 "shopify_product_id": shopify_product_id,
+                "shopify_status": status.value,
             }
         ],
     )
 
     product.shopify_product_id = shopify_product_id
+    product.shopify_status = status
 
     return product

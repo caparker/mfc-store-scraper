@@ -13,6 +13,7 @@ from src.shopify.actions import (
     ProductCreateError,
     ProductVariantCreateError,
 )
+from src.shopify.types.models.product import ProductStatus
 
 
 def _fetch_new_products(
@@ -40,6 +41,7 @@ def add_products(
     product_id: int | None = None,
     max_workers: int = 5,
     limit: int | None = None,
+    status: ProductStatus = ProductStatus.DRAFT,
 ):
     """Create new products (and their variants) in Shopify.
 
@@ -59,7 +61,7 @@ def add_products(
     failed = 0
 
     def _task(product: ProductModel):
-        created_product = create_product(product)
+        created_product = create_product(product, status=status)
         create_variants_for_product(created_product)
         return product
 

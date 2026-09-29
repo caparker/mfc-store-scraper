@@ -29,6 +29,8 @@ class ProductStatus(str, Enum):
     """
 
     ACTIVE = "ACTIVE"
-    ARCHIVE = "ARCHIVE"
+    ARCHIVED = "ARCHIVED"
     DRAFT = "DRAFT"
-    UNLISTED = "UNLISTED"
+    # Local-only: the product no longer exists in Shopify. Never sent to
+    # Shopify; rows in this state are skipped by every push. Set by pull-status.
+    DELETED = "DELETED"

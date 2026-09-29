@@ -30,3 +30,11 @@ class Queries:
     inventory_items_by_variants = Path(
         os.path.join(_query_directory, "inventory_items_by_variants.graphql")
     ).read_text(encoding="utf-8")
+
+    products_status_page = Path(
+        os.path.join(_query_directory, "products_status_page.graphql")
+    ).read_text(encoding="utf-8")
+
+    products_by_ids = Path(
+        os.path.join(_query_directory, "products_by_ids.graphql")
+    ).read_text(encoding="utf-8")

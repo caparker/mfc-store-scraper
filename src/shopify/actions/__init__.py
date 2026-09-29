@@ -12,6 +12,8 @@ from .dump_database import dump_database
 from .add_products import add_products
 from .update_products import update_products
 from .update_variants import update_variants
+from .set_product_status import set_product_status
+from .pull_product_status import pull_product_status
 from .pipeline import run_pipeline
 
 __all__ = [
@@ -26,5 +28,7 @@ __all__ = [
     "add_products",
     "update_products",
     "update_variants",
+    "set_product_status",
+    "pull_product_status",
     "run_pipeline",
 ]

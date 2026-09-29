@@ -39,6 +39,7 @@ def _build_product_input(product: ProductModel) -> dict:
             f"storage_{product.storage_climate}",
         ],
         "vendor": "Azure Standard",
+        "status": product.shopify_status.value,
     }
 
 
@@ -65,6 +66,7 @@ def update_products(
 
     Dirty = shopify_product_id IS NOT NULL AND
             (shopify_updated_at IS NULL OR shopify_updated_at < updated_at).
+    Rows with shopify_status = DELETED are never pushed.
     """
     logger.info("Starting Shopify product update")
 
@@ -77,6 +79,7 @@ def update_products(
             FROM azure.products
             WHERE id = %(id)s
               AND shopify_product_id IS NOT NULL
+              AND shopify_status <> 'DELETED'
             LIMIT 1
             """
         )
@@ -89,6 +92,7 @@ def update_products(
             SELECT *
             FROM azure.products
             WHERE shopify_product_id IS NOT NULL
+              AND shopify_status <> 'DELETED'
               AND (shopify_updated_at IS NULL OR shopify_updated_at < updated_at)
             LIMIT %(limit)s
             """

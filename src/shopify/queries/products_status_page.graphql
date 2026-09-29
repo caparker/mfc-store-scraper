@@ -1,0 +1,15 @@
+query ProductsStatusPage($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      id
+      title
+      handle
+      status
+      vendor
+    }
+  }
+}

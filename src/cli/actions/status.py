@@ -21,8 +21,12 @@ def sync_status() -> dict[str, int]:
 
             (SELECT count(*) FROM azure.products
                 WHERE shopify_product_id IS NOT NULL
+                  AND shopify_status <> 'DELETED'
                   AND (shopify_updated_at IS NULL
                        OR shopify_updated_at < updated_at)) AS products_dirty,
+
+            (SELECT count(*) FROM azure.products
+                WHERE shopify_status = 'DELETED') AS products_deleted,
 
             (SELECT count(*) FROM azure.packaging pack
                 JOIN azure.products prod ON prod.id = pack.products_id
@@ -34,6 +38,7 @@ def sync_status() -> dict[str, int]:
                 LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
                 WHERE pack.shopify_variant_id IS NOT NULL
                   AND prod.shopify_product_id IS NOT NULL
+                  AND prod.shopify_status <> 'DELETED'
                   AND (
                     pack.shopify_updated_at IS NULL
                     OR pack.shopify_updated_at < GREATEST(
@@ -47,8 +52,9 @@ def sync_status() -> dict[str, int]:
     return {
         "products_new": row[0],
         "products_dirty": row[1],
-        "variants_new": row[2],
-        "variants_dirty": row[3],
+        "products_deleted": row[2],
+        "variants_new": row[3],
+        "variants_dirty": row[4],
     }
 
 
@@ -72,6 +78,7 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
             SELECT id, name, last_changed_fields
             FROM azure.products
             WHERE shopify_product_id IS NOT NULL
+              AND shopify_status <> 'DELETED'
               AND (shopify_updated_at IS NULL OR shopify_updated_at < updated_at)
             ORDER BY updated_at DESC
             LIMIT %(limit)s
@@ -106,6 +113,7 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
             LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
             WHERE pack.shopify_variant_id IS NOT NULL
               AND prod.shopify_product_id IS NOT NULL
+              AND prod.shopify_status <> 'DELETED'
               AND (
                 pack.shopify_updated_at IS NULL
                 OR pack.shopify_updated_at < GREATEST(

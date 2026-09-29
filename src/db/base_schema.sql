@@ -67,10 +67,15 @@ CREATE TABLE IF NOT EXISTS azure.products (
     substitutions JSONB,
     category ltree,
     last_changed_fields TEXT[],
+    shopify_status TEXT NOT NULL DEFAULT 'DRAFT',
     shopify_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Existing databases were created before shopify_status existed.
+ALTER TABLE azure.products
+    ADD COLUMN IF NOT EXISTS shopify_status TEXT NOT NULL DEFAULT 'DRAFT';
 
 CREATE OR REPLACE TRIGGER products_set_updated_at
 BEFORE UPDATE ON azure.products
