@@ -20,6 +20,7 @@ from src.shopify.actions import (
 )
 from src.cli.actions.status import sync_status, sync_samples
 from src.cli.actions.membership import set_membership, UNSET
+from src.db import queries as db_queries
 from src.shopify.shopify import Shopify, ShopifyConnectionError
 from src.shopify.types.models.product import ProductStatus
 
@@ -501,6 +502,89 @@ def purchase_list(
                 f"Recorded supplier order {counts['supplier_order_id']} for {supplier}: "
                 f"{counts['line_items']} line item(s), {counts['units']} unit(s)"
             )
+
+
+
+@app.command()
+def query(
+    name: str = typer.Argument(
+        None, help="Named query to run (see --list)"
+    ),
+    raw_sql: str = typer.Option(
+        None, "--sql", help="Run this SELECT instead of a named query"
+    ),
+    where: str = typer.Option(
+        None, "--where", help="WHERE clause applied to the query's output columns"
+    ),
+    order_by: str = typer.Option(
+        None, "--order-by", help="ORDER BY clause applied to the query's output columns"
+    ),
+    limit: int = typer.Option(
+        db_queries.DEFAULT_LIMIT, "--limit", help="Max rows; 0 for no limit"
+    ),
+    output_format: str = typer.Option(
+        "table", "--format", "-f", help="table, csv, or json"
+    ),
+    list_queries: bool = typer.Option(
+        False, "--list", help="List available named queries and exit"
+    ),
+    show_sql: bool = typer.Option(
+        False, "--show-sql", help="Print the assembled SQL and exit"
+    ),
+):
+    """Run a named or ad-hoc read-only query against the local DB and print the rows."""
+    if list_queries:
+        for q in db_queries.list_queries():
+            typer.echo(f"  {q.name:<20} {q.description}")
+        return
+
+    if output_format not in db_queries.PRINTERS:
+        typer.echo(
+            f"Unknown --format {output_format!r}; "
+            f"expected one of {', '.join(db_queries.PRINTERS)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if raw_sql and name:
+        typer.echo("Pass either a query name or --sql, not both", err=True)
+        raise typer.Exit(code=2)
+    if raw_sql:
+        base = raw_sql.strip().rstrip(";")
+    elif name:
+        try:
+            base = db_queries.load_query(name).body
+        except KeyError as exc:
+            typer.echo(f"Unknown query {name!r}; run `query --list`", err=True)
+            raise typer.Exit(code=2) from exc
+    else:
+        typer.echo("Pass a query name or --sql (or --list)", err=True)
+        raise typer.Exit(code=2)
+
+    statement = db_queries.build_sql(
+        base,
+        where=where,
+        order_by=order_by,
+        limit=limit if limit > 0 else None,
+    )
+
+    if show_sql:
+        typer.echo(statement)
+        return
+
+    try:
+        columns, rows = db_queries.run_readonly(statement)
+    except db_queries.ReadOnlyViolation as exc:
+        typer.echo("Rejected: query attempted to write (transaction is read-only)", err=True)
+        raise typer.Exit(code=1) from exc
+    except db_queries.QueryError as exc:
+        typer.echo(f"SQL error: {str(exc).strip()}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    db_queries.PRINTERS[output_format](columns, rows)
+    if output_format == "table":
+        suffix = " (limit reached)" if limit and len(rows) == limit else ""
+        typer.echo(f"{len(rows)} row(s){suffix}", err=True)
 
 
 __all__ = ["app"]

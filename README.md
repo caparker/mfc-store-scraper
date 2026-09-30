@@ -58,6 +58,7 @@ Run `uv run python -m main --help` to see the full list.
 | `pull-orders` | Mirror open, unfulfilled Shopify orders and their line items into `azure.orders` / `azure.order_items`, and refresh locally open orders Shopify no longer lists. |
 | `purchase-list` | Show outstanding demand per product from open orders. `--by-order` lists per order line. `--commit` records the list as a placed supplier order so it drops off next time. |
 | `dump-db` | Dump the Postgres database to a timestamped SQL file. Customer and order rows are excluded unless `--include-customers`. |
+| `query [name]` | Run a read-only query against the local DB and print the rows. `--list` shows the named queries (one `.sql` file each in `src/db/queries/`); `--sql "SELECT ..."` runs an ad-hoc statement instead. `--where`, `--order-by`, and `--limit` (default 100, `0` for none) are appended to the query's output columns. `--format table\|csv\|json`; `--show-sql` prints the assembled statement without running it. |
 
 Common options: `--product-id`, `--packaging-code`, `--max-workers`, `--limit`.
 
@@ -102,6 +103,14 @@ uv run python -m main set-status active
 ```bash
 uv run python -m main sync-variants --product-id 12345
 uv run python -m main sync-stock --product-id 12345
+```
+
+**Poke at the database from the terminal:**
+```bash
+uv run python -m main query --list
+uv run python -m main query packaging --where "stock = 0 AND shopify_variant_id IS NOT NULL" --limit 20
+uv run python -m main query orders --where "email ILIKE '%@example.com'" --format csv > orders.csv
+uv run python -m main query --sql "SELECT shopify_status, count(*) FROM azure.products GROUP BY 1"
 ```
 
 **Buy from Azure to fill open orders:**
