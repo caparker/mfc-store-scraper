@@ -5,6 +5,9 @@ fragment LineItemFields on LineItem {
   variantTitle
   quantity
   unfulfilledQuantity
+  originalUnitPriceSet { shopMoney { amount } }
+  discountedUnitPriceSet { shopMoney { amount } }
+  discountedTotalSet { shopMoney { amount } }
   variant {
     id
   }

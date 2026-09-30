@@ -370,10 +370,28 @@ CREATE TABLE IF NOT EXISTS azure.orders (
     cancelled_at TIMESTAMPTZ,
     closed_at TIMESTAMPTZ,
     note TEXT,
+    -- Money in shop currency, as of the last pull (orders are only re-pulled while open).
+    currency TEXT,
+    subtotal NUMERIC(12, 2),
+    total_tax NUMERIC(12, 2),
+    total_discounts NUMERIC(12, 2),
+    total_shipping NUMERIC(12, 2),
+    total NUMERIC(12, 2),
+    net_payment NUMERIC(12, 2),
     last_pulled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Existing databases were created before the money columns existed.
+ALTER TABLE azure.orders
+    ADD COLUMN IF NOT EXISTS currency TEXT
+    , ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS total_tax NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS total_discounts NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS total_shipping NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS total NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS net_payment NUMERIC(12, 2);
 
 CREATE OR REPLACE TRIGGER orders_set_timestamp
 BEFORE UPDATE ON azure.orders
@@ -392,9 +410,18 @@ CREATE TABLE IF NOT EXISTS azure.order_items (
     variant_title TEXT,
     quantity INTEGER NOT NULL DEFAULT 0,
     unfulfilled_quantity INTEGER NOT NULL DEFAULT 0,
+    -- Shop currency. discounted_* include allocated order-level discounts.
+    original_unit_price NUMERIC(12, 2),
+    discounted_unit_price NUMERIC(12, 2),
+    discounted_total NUMERIC(12, 2),
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+ALTER TABLE azure.order_items
+    ADD COLUMN IF NOT EXISTS original_unit_price NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS discounted_unit_price NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS discounted_total NUMERIC(12, 2);
 
 CREATE OR REPLACE TRIGGER order_items_set_timestamp
 BEFORE UPDATE ON azure.order_items
@@ -483,6 +510,55 @@ GROUP BY
     pd.packaging_code, pd.sku, p.name, pd.title, pk.size, pd.variant_title
     , p.id, pk.stock, cp.wholesale_dollars, cp.wholesale_unit
 ORDER BY pd.packaging_code IS NULL, product_name, size;
+
+-- Margin per sold line: what the customer paid per unit against the Azure
+-- wholesale price current at query time (not the price on the purchase date).
+-- Dropped first: CREATE OR REPLACE cannot change a view column's type.
+DROP VIEW IF EXISTS azure.order_item_margin;
+CREATE VIEW azure.order_item_margin AS
+SELECT
+    o.id AS orders_id
+    , o.name AS order_name
+    , o.ordered_at
+    , o.fulfillment_status
+    , oi.id AS order_items_id
+    , oi.packaging_code
+    , oi.sku
+    , oi.title
+    , oi.variant_title
+    , oi.quantity
+    , oi.original_unit_price
+    , oi.discounted_unit_price
+    , oi.discounted_total
+    , cp.retail_dollars
+    , cp.retail_unit
+    , cp.wholesale_dollars
+    , cp.wholesale_unit
+    , (oi.discounted_unit_price - cp.wholesale) AS wholesale_unit_margin
+    , (oi.discounted_total - cp.wholesale * oi.quantity) AS wholesale_line_margin
+    , (oi.discounted_unit_price - cp.retail) AS retail_unit_margin
+    , (oi.discounted_total - cp.retail * oi.quantity) AS retail_line_margin
+    , CASE
+        WHEN oi.discounted_unit_price > 0
+        THEN round((oi.discounted_unit_price - cp.wholesale) / oi.discounted_unit_price * 100, 1)
+      END AS margin_percent
+FROM azure.order_items oi
+JOIN azure.orders o ON o.id = oi.orders_id
+LEFT JOIN LATERAL (
+    SELECT wholesale_dollars
+      , wholesale_unit
+      , wholesale_dollars::numeric(12, 2) AS wholesale
+      , retail_dollars
+      , retail_unit
+      , retail_dollars::numeric(12, 2) AS retail
+    FROM azure.current_prices
+    WHERE packaging_code = oi.packaging_code
+) cp ON TRUE
+WHERE o.cancelled_at IS NULL;
+
+
+
+
 
 CREATE OR REPLACE VIEW dirty_customers AS
 SELECT

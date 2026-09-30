@@ -7,6 +7,12 @@ fragment OrderFields on Order {
   note
   displayFinancialStatus
   displayFulfillmentStatus
+  currentSubtotalPriceSet { shopMoney { amount currencyCode } }
+  currentTotalTaxSet { shopMoney { amount currencyCode } }
+  currentTotalDiscountsSet { shopMoney { amount currencyCode } }
+  totalShippingPriceSet { shopMoney { amount currencyCode } }
+  currentTotalPriceSet { shopMoney { amount currencyCode } }
+  netPaymentSet { shopMoney { amount currencyCode } }
   customer {
     id
     firstName

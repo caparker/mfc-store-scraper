@@ -1,6 +1,7 @@
 """Pydantic models for the `azure.orders` and `azure.order_items` tables"""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel
@@ -20,6 +21,13 @@ class OrderModel(BaseModel):
     cancelled_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     note: Optional[str] = None
+    currency: Optional[str] = None
+    subtotal: Optional[Decimal] = None
+    total_tax: Optional[Decimal] = None
+    total_discounts: Optional[Decimal] = None
+    total_shipping: Optional[Decimal] = None
+    total: Optional[Decimal] = None
+    net_payment: Optional[Decimal] = None
     last_pulled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -38,5 +46,8 @@ class OrderItemModel(BaseModel):
     variant_title: Optional[str] = None
     quantity: int
     unfulfilled_quantity: int
+    original_unit_price: Optional[Decimal] = None
+    discounted_unit_price: Optional[Decimal] = None
+    discounted_total: Optional[Decimal] = None
     created_at: datetime
     updated_at: datetime

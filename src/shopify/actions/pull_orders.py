@@ -11,9 +11,9 @@ from src.shopify.shopify import Shopify, ShopifyQueryError
 
 # Orders page x line items per order must stay under Shopify's 1000-point
 # single-query cost limit; 10 x 40 (plus variant and customer objects) fits.
-ORDER_PAGE_SIZE = 10
+ORDER_PAGE_SIZE = 8
 LINE_ITEM_PAGE_SIZE = 40
-IDS_PAGE_SIZE = 10
+IDS_PAGE_SIZE = 8
 
 # Unfulfilled in Shopify's search syntax means null or partially fulfilled.
 OPEN_QUERY = "status:open AND fulfillment_status:unfulfilled"
@@ -89,6 +89,15 @@ def _fetch_by_ids(shopify: Shopify, ids: list[str]) -> dict[str, dict | None]:
     return found
 
 
+def _amount(money_set: dict | None) -> str | None:
+    """Shop-currency amount from a MoneyBag, as the decimal string Shopify sends."""
+    return ((money_set or {}).get("shopMoney") or {}).get("amount")
+
+
+def _currency(money_set: dict | None) -> str | None:
+    return ((money_set or {}).get("shopMoney") or {}).get("currencyCode")
+
+
 def _customer_row(customer: dict | None) -> dict | None:
     if not customer:
         return None
@@ -113,6 +122,13 @@ def _order_row(node: dict, pulled_at: datetime) -> dict:
         "cancelled_at": node.get("cancelledAt"),
         "closed_at": node.get("closedAt"),
         "note": node.get("note"),
+        "currency": _currency(node.get("currentTotalPriceSet")),
+        "subtotal": _amount(node.get("currentSubtotalPriceSet")),
+        "total_tax": _amount(node.get("currentTotalTaxSet")),
+        "total_discounts": _amount(node.get("currentTotalDiscountsSet")),
+        "total_shipping": _amount(node.get("totalShippingPriceSet")),
+        "total": _amount(node.get("currentTotalPriceSet")),
+        "net_payment": _amount(node.get("netPaymentSet")),
         "pulled_at": pulled_at,
     }
 
@@ -129,6 +145,9 @@ def _item_row(order_gid: str, item: dict) -> dict:
         "variant_title": item.get("variantTitle"),
         "quantity": item.get("quantity") or 0,
         "unfulfilled_quantity": item.get("unfulfilledQuantity") or 0,
+        "original_unit_price": _amount(item.get("originalUnitPriceSet")),
+        "discounted_unit_price": _amount(item.get("discountedUnitPriceSet")),
+        "discounted_total": _amount(item.get("discountedTotalSet")),
     }
 
 
@@ -164,7 +183,10 @@ def _write(
                     INSERT INTO azure.orders (
                         shopify_order_id, name, customers_id, shopify_customer_id
                         , financial_status, fulfillment_status, ordered_at
-                        , cancelled_at, closed_at, note, last_pulled_at
+                        , cancelled_at, closed_at, note
+                        , currency, subtotal, total_tax, total_discounts
+                        , total_shipping, total, net_payment
+                        , last_pulled_at
                     )
                     VALUES (
                         %(gid)s, %(name)s
@@ -174,7 +196,10 @@ def _write(
                         )
                         , %(shopify_customer_id)s
                         , %(financial_status)s, %(fulfillment_status)s, %(ordered_at)s
-                        , %(cancelled_at)s, %(closed_at)s, %(note)s, %(pulled_at)s
+                        , %(cancelled_at)s, %(closed_at)s, %(note)s
+                        , %(currency)s, %(subtotal)s, %(total_tax)s, %(total_discounts)s
+                        , %(total_shipping)s, %(total)s, %(net_payment)s
+                        , %(pulled_at)s
                     )
                     ON CONFLICT (shopify_order_id) DO UPDATE SET
                         name = EXCLUDED.name
@@ -186,6 +211,13 @@ def _write(
                         , cancelled_at = EXCLUDED.cancelled_at
                         , closed_at = EXCLUDED.closed_at
                         , note = EXCLUDED.note
+                        , currency = EXCLUDED.currency
+                        , subtotal = EXCLUDED.subtotal
+                        , total_tax = EXCLUDED.total_tax
+                        , total_discounts = EXCLUDED.total_discounts
+                        , total_shipping = EXCLUDED.total_shipping
+                        , total = EXCLUDED.total
+                        , net_payment = EXCLUDED.net_payment
                         , last_pulled_at = EXCLUDED.last_pulled_at
                     """
                 ),
@@ -199,6 +231,7 @@ def _write(
                             orders_id, shopify_line_item_id, shopify_variant_id, sku
                             , packaging_code, title, variant_title
                             , quantity, unfulfilled_quantity
+                            , original_unit_price, discounted_unit_price, discounted_total
                         )
                         VALUES (
                             (SELECT id FROM azure.orders WHERE shopify_order_id = %(order_gid)s)
@@ -206,6 +239,8 @@ def _write(
                             , (SELECT code FROM azure.packaging WHERE code = %(packaging_code)s)
                             , %(title)s, %(variant_title)s
                             , %(quantity)s, %(unfulfilled_quantity)s
+                            , %(original_unit_price)s, %(discounted_unit_price)s
+                            , %(discounted_total)s
                         )
                         ON CONFLICT (shopify_line_item_id) DO UPDATE SET
                             shopify_variant_id = EXCLUDED.shopify_variant_id
@@ -215,6 +250,9 @@ def _write(
                             , variant_title = EXCLUDED.variant_title
                             , quantity = EXCLUDED.quantity
                             , unfulfilled_quantity = EXCLUDED.unfulfilled_quantity
+                            , original_unit_price = EXCLUDED.original_unit_price
+                            , discounted_unit_price = EXCLUDED.discounted_unit_price
+                            , discounted_total = EXCLUDED.discounted_total
                         """
                     ),
                     items,
