@@ -37,17 +37,25 @@ def commit_supplier_order(
     supplier: str = AZURE,
     notes: str | None = None,
     database: Database | None = None,
+    packaging_codes: list[str] | None = None,
 ) -> dict[str, int]:
     """Record the current outstanding demand as a placed supplier order.
 
     For the azure supplier only line items linked to azure.packaging are
     recorded; unlinked items are not something Azure can supply. For any
-    other supplier name, only the unlinked items are recorded. Afterwards the
-    purchase list shows only demand that arrived since.
+    other supplier name, only the unlinked items are recorded. With
+    packaging_codes, only those codes are recorded (used by quick-order to
+    commit exactly what made it into the cart). Afterwards the purchase list
+    shows only demand that arrived since.
     """
     database = database or Database()
 
-    if supplier == AZURE:
+    if packaging_codes is not None:
+        if not packaging_codes:
+            logger.info("No packaging codes to commit")
+            return {"supplier_order_id": 0, "line_items": 0, "units": 0}
+        item_filter = sql.SQL("packaging_code = ANY(%(codes)s)")
+    elif supplier == AZURE:
         item_filter = sql.SQL("packaging_code IS NOT NULL")
     else:
         item_filter = sql.SQL("packaging_code IS NULL")
@@ -79,7 +87,7 @@ def commit_supplier_order(
                     RETURNING quantity
                     """
                 ).format(item_filter=item_filter),
-                {"supplier_order_id": supplier_order_id},
+                {"supplier_order_id": supplier_order_id, "codes": packaging_codes},
             )
             quantities = [q for (q,) in curs.fetchall()]
 

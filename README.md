@@ -67,6 +67,7 @@ Common options: `--product-id`, `--packaging-code`, `--max-workers`, `--limit`.
 | --- | --- |
 | `azure scrape` | Scrape all products from Azure Standard into the DB. |
 | `azure upload-remaining-images` | Push any un-uploaded media to Shopify. |
+| `azure quick-order` | Add the Azure purchase list to the azurestandard.com cart through the site's quick-add form, in a visible browser you log in to. `--limit N`, `--dry-run`, `--no-commit`, `--notes`. |
 
 ### Typical workflows
 
@@ -107,9 +108,10 @@ uv run python -m main sync-stock --product-id 12345
 ```bash
 uv run python -m main pull-orders
 uv run python -m main purchase-list
-# place the order with Azure, then:
-uv run python -m main purchase-list --commit --notes "Azure drop 2026-10-03"
+uv run python -m main azure quick-order --limit 1   # first time: watch one item go in
+uv run python -m main azure quick-order --notes "Azure drop 2026-10-03"
 ```
+Or skip the browser and record the order by hand after placing it: `purchase-list --commit`.
 
 **Record a new member:**
 ```bash
@@ -146,6 +148,8 @@ A customer created locally (no `shopify_customer_id`) is created in Shopify by `
 **Orders** are a read-only mirror. `pull-orders` fetches every order Shopify lists as `status:open` and `fulfillment_status:unfulfilled` (which includes partially fulfilled), upserts it with its line items, and links each line item to `azure.packaging` by the `AZ-<code>` SKU. Locally open orders that Shopify no longer lists are re-fetched by id so their fulfillment or cancellation is recorded; orders that no longer exist are marked closed. Nothing is ever pushed to Shopify for orders.
 
 **Purchase list.** `azure.purchase_demand` computes, per open line item, `unfulfilled_quantity` minus what is already on a supplier order. `azure.purchase_list` sums that per packaging code with product name, size, Azure stock, and current wholesale price. Line items whose SKU does not match an Azure packaging row are listed separately as "Not from Azure". `purchase-list --commit` snapshots the current Azure demand into `azure.supplier_orders` / `azure.supplier_order_items`; with a `--supplier` other than `azure` it snapshots the unlinked items instead. If an order is later cancelled or fulfilled from stock, its committed quantity is simply no longer counted.
+
+**Quick order.** `azure quick-order` needs a one-time `uv run playwright install chromium`. It opens a real Chromium window with a profile stored in `.playwright-profile/` (gitignored), so you log in to azurestandard.com by hand the first time and stay logged in afterwards; the tool never stores your Azure password. It opens the cart drawer, and for each item on the purchase list types the packaging code and quantity into the quick-add form and clicks Quick-Add. An item counts as failed when error text appears in the cart drawer; those stay on the purchase list. When all items are done it records a supplier order for the items that went in (unless `--no-commit`), then leaves the browser open on the cart for you to review and check out. The tool never checks out. Success detection is heuristic, so use `--limit 1` the first time and compare the cart with the log.
 
 **Shopify setup.** The app needs the `read_orders`, `read_customers`, and `write_customers` scopes and protected customer data access enabled in the Shopify dev dashboard. Regenerate the token after changing scopes; `check-connection` reports any missing scope. `read_orders` only returns the last 60 days of orders, which is enough for open orders.
 

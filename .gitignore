@@ -12,3 +12,5 @@ dumps/
 
 playground.py
 errors.json
+# Playwright browser profile (Azure login cookies)
+.playwright-profile/
