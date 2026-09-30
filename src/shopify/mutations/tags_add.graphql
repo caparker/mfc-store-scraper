@@ -1,0 +1,8 @@
+mutation TagsAdd($id: ID!, $tags: [String!]!) {
+  tagsAdd(id: $id, tags: $tags) {
+    userErrors {
+      field
+      message
+    }
+  }
+}

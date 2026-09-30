@@ -1,0 +1,14 @@
+query OrderLineItemsPage($id: ID!, $first: Int!, $after: String) {
+  order(id: $id) {
+    id
+    lineItems(first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ...LineItemFields
+      }
+    }
+  }
+}

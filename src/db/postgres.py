@@ -10,6 +10,16 @@ MARKUP_PERCENTAGE = 15
 class Database:
     """Connection helper for the PostgreSQL database"""
 
+    def connection(self):
+        """Open a connection; use as a context manager for multi-statement transactions."""
+        return psycopg.connect(
+            dbname=settings.db_name,
+            user=settings.db_username,
+            password=settings.db_password,
+            port=settings.db_port,
+            host=settings.db_host,
+        )
+
     def fetchall(self, query, data=None, row_factory=None):
         """Helper to run a query and return all results"""
         with psycopg.connect(

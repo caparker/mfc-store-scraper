@@ -52,7 +52,22 @@ def sync_status() -> dict[str, int]:
                 WHERE pack.shopify_variant_id IS NOT NULL
                   AND prod.shopify_product_id IS NOT NULL
                   AND prod.shopify_status <> 'DELETED'
-                  AND pack.stock IS DISTINCT FROM pack.shopify_stock) AS stock_dirty
+                  AND pack.stock IS DISTINCT FROM pack.shopify_stock) AS stock_dirty,
+
+            (SELECT count(*) FROM azure.customers
+                WHERE shopify_customer_id IS NULL) AS customers_new,
+
+            (SELECT count(*) FROM azure.customers
+                WHERE shopify_customer_id IS NOT NULL
+                  AND (shopify_updated_at IS NULL
+                       OR shopify_updated_at < updated_at)) AS customers_dirty,
+
+            (SELECT count(*) FROM azure.open_orders) AS orders_open,
+
+            (SELECT count(*) FROM azure.purchase_demand
+                WHERE outstanding > 0) AS purchase_items,
+
+            (SELECT COALESCE(sum(outstanding), 0) FROM azure.purchase_demand) AS purchase_units
     """)
 
     row = db.fetchone(counts_query, {})
@@ -63,6 +78,11 @@ def sync_status() -> dict[str, int]:
         "variants_new": row[3],
         "variants_dirty": row[4],
         "stock_dirty": row[5],
+        "customers_new": row[6],
+        "customers_dirty": row[7],
+        "orders_open": row[8],
+        "purchase_items": row[9],
+        "purchase_units": int(row[10]),
     }
 
 
@@ -150,10 +170,35 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
         {"limit": limit},
     )
 
+    customers_new = db.fetchall(
+        sql.SQL("""
+            SELECT id, email, member_number
+            FROM azure.customers
+            WHERE shopify_customer_id IS NULL
+            ORDER BY created_at DESC
+            LIMIT %(limit)s
+        """),
+        {"limit": limit},
+    )
+
+    customers_dirty = db.fetchall(
+        sql.SQL("""
+            SELECT id, email, member_number, last_changed_fields
+            FROM azure.customers
+            WHERE shopify_customer_id IS NOT NULL
+              AND (shopify_updated_at IS NULL OR shopify_updated_at < updated_at)
+            ORDER BY updated_at DESC
+            LIMIT %(limit)s
+        """),
+        {"limit": limit},
+    )
+
     return {
         "products_new": products_new,
         "products_dirty": products_dirty,
         "variants_new": variants_new,
         "variants_dirty": variants_dirty,
         "stock_dirty": stock_dirty,
+        "customers_new": customers_new,
+        "customers_dirty": customers_dirty,
     }

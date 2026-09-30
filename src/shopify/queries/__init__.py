@@ -42,3 +42,32 @@ class Queries:
     product_by_handle = Path(
         os.path.join(_query_directory, "product_by_handle.graphql")
     ).read_text(encoding="utf-8")
+
+    _line_item_fields = Path(
+        os.path.join(_query_directory, "line_item_fields.graphql")
+    ).read_text(encoding="utf-8")
+
+    _order_fields = Path(
+        os.path.join(_query_directory, "order_fields.graphql")
+    ).read_text(encoding="utf-8") + _line_item_fields
+
+    # Order queries share the OrderFields/LineItemFields fragments.
+    orders_open_page = Path(
+        os.path.join(_query_directory, "orders_open_page.graphql")
+    ).read_text(encoding="utf-8") + _order_fields
+
+    orders_by_ids = Path(
+        os.path.join(_query_directory, "orders_by_ids.graphql")
+    ).read_text(encoding="utf-8") + _order_fields
+
+    order_line_items_page = Path(
+        os.path.join(_query_directory, "order_line_items_page.graphql")
+    ).read_text(encoding="utf-8") + _line_item_fields
+
+    customers_page = Path(
+        os.path.join(_query_directory, "customers_page.graphql")
+    ).read_text(encoding="utf-8")
+
+    customer_membership = Path(
+        os.path.join(_query_directory, "customer_membership.graphql")
+    ).read_text(encoding="utf-8")

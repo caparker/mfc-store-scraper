@@ -1,0 +1,30 @@
+fragment OrderFields on Order {
+  id
+  name
+  createdAt
+  cancelledAt
+  closedAt
+  note
+  displayFinancialStatus
+  displayFulfillmentStatus
+  customer {
+    id
+    firstName
+    lastName
+    defaultEmailAddress {
+      emailAddress
+    }
+    defaultPhoneNumber {
+      phoneNumber
+    }
+  }
+  lineItems(first: 40) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ...LineItemFields
+    }
+  }
+}

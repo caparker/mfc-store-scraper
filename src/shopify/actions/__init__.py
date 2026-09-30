@@ -20,6 +20,10 @@ from .update_variants import update_variants
 from .update_stock import update_stock
 from .set_product_status import set_product_status
 from .pull_product_status import pull_product_status
+from .pull_orders import pull_orders
+from .pull_customers import pull_customers
+from .update_customers import update_customers, CustomerPushError
+from .purchase_list import get_purchase_list, get_purchase_demand, commit_supplier_order
 from .pipeline import run_pipeline
 
 __all__ = [
@@ -39,5 +43,12 @@ __all__ = [
     "update_stock",
     "set_product_status",
     "pull_product_status",
+    "pull_orders",
+    "pull_customers",
+    "update_customers",
+    "CustomerPushError",
+    "get_purchase_list",
+    "get_purchase_demand",
+    "commit_supplier_order",
     "run_pipeline",
 ]

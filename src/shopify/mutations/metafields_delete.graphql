@@ -1,0 +1,11 @@
+mutation MetafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
+  metafieldsDelete(metafields: $metafields) {
+    deletedMetafields {
+      key
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}

@@ -1,0 +1,8 @@
+mutation TagsRemove($id: ID!, $tags: [String!]!) {
+  tagsRemove(id: $id, tags: $tags) {
+    userErrors {
+      field
+      message
+    }
+  }
+}

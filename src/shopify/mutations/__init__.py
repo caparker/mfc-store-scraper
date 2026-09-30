@@ -51,3 +51,23 @@ class Mutations:
     inventory_set_on_hand = Path(
         os.path.join(_query_directory, "inventory_set_on_hand.graphql")
     ).read_text(encoding="utf-8")
+
+    customer_create = Path(
+        os.path.join(_query_directory, "customer_create.graphql")
+    ).read_text(encoding="utf-8")
+
+    metafields_set = Path(
+        os.path.join(_query_directory, "metafields_set.graphql")
+    ).read_text(encoding="utf-8")
+
+    metafields_delete = Path(
+        os.path.join(_query_directory, "metafields_delete.graphql")
+    ).read_text(encoding="utf-8")
+
+    tags_add = Path(
+        os.path.join(_query_directory, "tags_add.graphql")
+    ).read_text(encoding="utf-8")
+
+    tags_remove = Path(
+        os.path.join(_query_directory, "tags_remove.graphql")
+    ).read_text(encoding="utf-8")

@@ -311,3 +311,199 @@ SELECT
 FROM azure.products p
 JOIN azure.packaging pk ON pk.products_id = p.id
 LEFT JOIN azure.current_prices cp ON cp.packaging_code = pk.code;
+
+
+-- CUSTOMERS AND ORDERS
+--
+-- Customers: Shopify owns the contact columns (they are pulled and never
+-- pushed after the initial create); the DB owns the membership columns,
+-- which are pushed to Shopify as metafields under the `membership`
+-- namespace. Only the membership columns mark a row dirty, so a pull never
+-- dirties a customer and a push never touches contact info.
+CREATE TABLE IF NOT EXISTS azure.customers (
+    id SERIAL PRIMARY KEY,
+    shopify_customer_id TEXT UNIQUE,
+    email TEXT UNIQUE,
+    first_name TEXT,
+    last_name TEXT,
+    phone TEXT,
+    default_address JSONB,
+    -- Membership (local source of truth, pushed to Shopify)
+    member_number TEXT UNIQUE,
+    membership_status TEXT,
+    member_since DATE,
+    membership_expires DATE,
+    -- Local only, never pushed
+    notes TEXT,
+    last_changed_fields TEXT[],
+    -- Shopify's updatedAt for this customer as of the last pull; the next
+    -- pull only asks for customers updated since the newest value seen.
+    remote_updated_at TIMESTAMPTZ,
+    shopify_updated_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER customers_set_updated_at
+BEFORE UPDATE ON azure.customers
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at_if_changed(
+    'updated_at', 'created_at',
+    'shopify_customer_id', 'shopify_updated_at', 'remote_updated_at',
+    'last_changed_fields',
+    'email', 'first_name', 'last_name', 'phone', 'default_address',
+    'notes'
+);
+
+-- Orders are read-only mirrors of Shopify. pull-orders upserts every open
+-- unfulfilled order and refreshes any locally open order that Shopify no
+-- longer lists as open.
+CREATE TABLE IF NOT EXISTS azure.orders (
+    id SERIAL PRIMARY KEY,
+    shopify_order_id TEXT UNIQUE NOT NULL,
+    name TEXT,
+    customers_id INTEGER REFERENCES azure.customers(id) ON DELETE SET NULL,
+    shopify_customer_id TEXT,
+    financial_status TEXT,
+    fulfillment_status TEXT,
+    ordered_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
+    note TEXT,
+    last_pulled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER orders_set_timestamp
+BEFORE UPDATE ON azure.orders
+FOR EACH ROW
+EXECUTE FUNCTION trigger_set_timestamp();
+
+CREATE TABLE IF NOT EXISTS azure.order_items (
+    id SERIAL PRIMARY KEY,
+    orders_id INTEGER NOT NULL REFERENCES azure.orders(id) ON DELETE CASCADE,
+    shopify_line_item_id TEXT UNIQUE NOT NULL,
+    shopify_variant_id TEXT,
+    sku TEXT,
+    -- Derived from an `AZ-<code>` SKU; NULL for anything that is not an Azure product.
+    packaging_code TEXT REFERENCES azure.packaging(code) ON DELETE SET NULL,
+    title TEXT,
+    variant_title TEXT,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    unfulfilled_quantity INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE OR REPLACE TRIGGER order_items_set_timestamp
+BEFORE UPDATE ON azure.order_items
+FOR EACH ROW
+EXECUTE FUNCTION trigger_set_timestamp();
+
+CREATE INDEX IF NOT EXISTS idx_orders_customers_id ON azure.orders(customers_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_orders_id ON azure.order_items(orders_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_packaging_code ON azure.order_items(packaging_code);
+
+-- A supplier order is a snapshot of demand that was actually purchased from a
+-- supplier. Recording it lets the purchase list show only net new demand.
+CREATE TABLE IF NOT EXISTS azure.supplier_orders (
+    id SERIAL PRIMARY KEY,
+    supplier TEXT NOT NULL DEFAULT 'azure',
+    placed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS azure.supplier_order_items (
+    id SERIAL PRIMARY KEY,
+    supplier_orders_id INTEGER NOT NULL REFERENCES azure.supplier_orders(id) ON DELETE CASCADE,
+    order_items_id INTEGER NOT NULL REFERENCES azure.order_items(id) ON DELETE CASCADE,
+    packaging_code TEXT,
+    quantity INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_order_items_order_items_id
+  ON azure.supplier_order_items(order_items_id);
+
+CREATE OR REPLACE VIEW azure.open_orders AS
+SELECT *
+FROM azure.orders
+WHERE cancelled_at IS NULL
+  AND closed_at IS NULL
+  AND fulfillment_status IS DISTINCT FROM 'FULFILLED';
+
+-- Per line item: how many units are still unfulfilled and not yet on a
+-- supplier order. Fulfilling from stock or cancelling after a supplier order
+-- was placed can push the raw number negative; it is clamped at 0.
+CREATE OR REPLACE VIEW azure.purchase_demand AS
+SELECT
+    oi.id AS order_items_id
+    , o.id AS orders_id
+    , o.name AS order_name
+    , o.ordered_at
+    , o.financial_status
+    , oi.packaging_code
+    , oi.sku
+    , oi.title
+    , oi.variant_title
+    , oi.unfulfilled_quantity
+    , COALESCE(soi.ordered, 0) AS supplier_ordered
+    , GREATEST(oi.unfulfilled_quantity - COALESCE(soi.ordered, 0), 0) AS outstanding
+FROM azure.order_items oi
+JOIN azure.open_orders o ON o.id = oi.orders_id
+LEFT JOIN LATERAL (
+    SELECT sum(quantity) AS ordered
+    FROM azure.supplier_order_items
+    WHERE order_items_id = oi.id
+) soi ON TRUE
+WHERE oi.unfulfilled_quantity > 0;
+
+-- Per packaging code: what to buy from Azure. Items without a packaging code
+-- (non-Azure products) are grouped by SKU and title instead.
+CREATE OR REPLACE VIEW azure.purchase_list AS
+SELECT
+    pd.packaging_code
+    , pd.sku
+    , COALESCE(p.name, pd.title) AS product_name
+    , COALESCE(pk.size, pd.variant_title) AS size
+    , p.id AS products_id
+    , pk.stock AS azure_stock
+    , cp.wholesale_dollars
+    , cp.wholesale_unit
+    , sum(pd.outstanding) AS outstanding
+    , count(DISTINCT pd.orders_id) AS order_count
+    , min(pd.ordered_at) AS oldest_order_at
+FROM azure.purchase_demand pd
+LEFT JOIN azure.packaging pk ON pk.code = pd.packaging_code
+LEFT JOIN azure.products p ON p.id = pk.products_id
+LEFT JOIN azure.current_prices cp ON cp.packaging_code = pd.packaging_code
+WHERE pd.outstanding > 0
+GROUP BY
+    pd.packaging_code, pd.sku, p.name, pd.title, pk.size, pd.variant_title
+    , p.id, pk.stock, cp.wholesale_dollars, cp.wholesale_unit
+ORDER BY pd.packaging_code IS NULL, product_name, size;
+
+CREATE OR REPLACE VIEW dirty_customers AS
+SELECT
+    id AS customers_id
+    , shopify_customer_id
+    , email
+    , member_number
+    , updated_at
+    , shopify_updated_at
+    , last_changed_fields
+FROM azure.customers
+WHERE shopify_customer_id IS NOT NULL
+  AND (shopify_updated_at IS NULL OR shopify_updated_at < updated_at)
+ORDER BY updated_at DESC;
+
+CREATE OR REPLACE VIEW pending_customers AS
+SELECT
+    id AS customers_id
+    , email
+    , member_number
+    , created_at
+FROM azure.customers
+WHERE shopify_customer_id IS NULL
+ORDER BY created_at DESC;

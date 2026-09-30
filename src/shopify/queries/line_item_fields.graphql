@@ -1,0 +1,11 @@
+fragment LineItemFields on LineItem {
+  id
+  sku
+  title
+  variantTitle
+  quantity
+  unfulfilledQuantity
+  variant {
+    id
+  }
+}

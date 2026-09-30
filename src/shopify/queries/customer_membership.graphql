@@ -1,0 +1,12 @@
+query CustomerMembership($id: ID!) {
+  customer(id: $id) {
+    id
+    tags
+    metafields(namespace: "membership", first: 10) {
+      nodes {
+        key
+        value
+      }
+    }
+  }
+}

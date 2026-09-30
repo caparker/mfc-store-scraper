@@ -1,7 +1,7 @@
+from datetime import datetime
+
 import typer
 
-from psycopg import sql, rows
-from src.db.postgres import Database
 from src.shopify.actions import (
     add_products,
     update_products,
@@ -11,13 +11,31 @@ from src.shopify.actions import (
     run_pipeline,
     set_product_status,
     pull_product_status,
+    pull_orders,
+    pull_customers,
+    update_customers,
+    get_purchase_list,
+    get_purchase_demand,
+    commit_supplier_order,
 )
 from src.cli.actions.status import sync_status, sync_samples
+from src.cli.actions.membership import set_membership, UNSET
 from src.shopify.shopify import Shopify, ShopifyConnectionError
 from src.shopify.types.models.product import ProductStatus
 
 
 app = typer.Typer()
+
+# Scopes every command in this CLI relies on.
+REQUIRED_SCOPES = {
+    "read_products",
+    "write_products",
+    "read_inventory",
+    "write_inventory",
+    "read_orders",
+    "read_customers",
+    "write_customers",
+}
 
 
 @app.command()
@@ -26,16 +44,29 @@ def check_connection():
     shop = Shopify()
     try:
         info = shop.check_connection()
-        app_name = info.get("currentAppInstallation", {}).get("app", {}).get("title", "?")
+        installation = info.get("currentAppInstallation", {})
+        app_name = installation.get("app", {}).get("title", "?")
         typer.echo(f"✓ Connected to {shop.shop_domain} as {app_name}")
     except ShopifyConnectionError as e:
         typer.echo(f"✗ Connection failed: {e}", err=True)
         raise typer.Exit(code=1)
 
+    granted = {s["handle"] for s in installation.get("accessScopes", [])}
+    missing = sorted(REQUIRED_SCOPES - granted)
+    if missing:
+        typer.echo(
+            f"✗ Missing access scopes: {', '.join(missing)} "
+            "(add them to the app and regenerate the token)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ Access scopes: {', '.join(sorted(granted))}")
+
 
 @app.command()
 def run():
-    """Run the full pipeline: scrape → sync products → sync variants → sync stock → dump."""
+    """Run the full pipeline: scrape → sync products/variants/stock → pull customers
+    → sync customers → pull orders → dump."""
     run_pipeline()
 
 
@@ -44,9 +75,14 @@ def dump_db(
     output_dir: str = typer.Option(
         "./dumps", "--output-dir", help="Directory to write the dump to"
     ),
+    include_customers: bool = typer.Option(
+        False, "--include-customers",
+        help="Also dump customer and order rows (personal data)",
+    ),
 ):
-    """Dump the Postgres database to a timestamped SQL file."""
-    dump_database(output_dir=output_dir)
+    """Dump the Postgres database to a timestamped SQL file. Customer and order rows
+    are excluded by default."""
+    dump_database(output_dir=output_dir, include_customers=include_customers)
 
 
 @app.command()
@@ -208,7 +244,11 @@ def status(
 ):
     """Show a summary of items pending sync to Shopify."""
     counts = sync_status()
-    total = sum(v for k, v in counts.items() if k != "products_deleted")
+    pending_keys = (
+        "products_new", "products_dirty", "variants_new", "variants_dirty",
+        "stock_dirty", "customers_new", "customers_dirty",
+    )
+    total = sum(counts[k] for k in pending_keys)
 
     typer.echo("Sync status:")
     typer.echo(f"  products new:    {counts['products_new']:>6}")
@@ -216,8 +256,16 @@ def status(
     typer.echo(f"  variants new:    {counts['variants_new']:>6}")
     typer.echo(f"  variants dirty:  {counts['variants_dirty']:>6}")
     typer.echo(f"  stock dirty:     {counts['stock_dirty']:>6}")
+    typer.echo(f"  customers new:   {counts['customers_new']:>6}")
+    typer.echo(f"  customers dirty: {counts['customers_dirty']:>6}")
     typer.echo(f"  total pending:   {total:>6}")
     typer.echo(f"  products deleted in Shopify (not synced): {counts['products_deleted']}")
+    typer.echo("Orders:")
+    typer.echo(f"  open orders:     {counts['orders_open']:>6}")
+    typer.echo(
+        f"  to purchase:     {counts['purchase_items']:>6} line item(s), "
+        f"{counts['purchase_units']} unit(s)"
+    )
 
     if not verbose:
         return
@@ -250,6 +298,209 @@ def status(
         typer.echo("\nStock to push:")
         for pack_id, code, name, stock, shopify_stock in samples["stock_dirty"]:
             typer.echo(f"  [{pack_id}] {code}  {name}  ({shopify_stock} -> {stock})")
+
+    if samples["customers_new"]:
+        typer.echo("\nCustomers to create:")
+        for cid, email, member_number in samples["customers_new"]:
+            typer.echo(f"  [{cid}] {email}  member {member_number or '-'}")
+
+    if samples["customers_dirty"]:
+        typer.echo("\nCustomers to update:")
+        for cid, email, member_number, changed in samples["customers_dirty"]:
+            fields = ", ".join(changed) if changed else "?"
+            typer.echo(f"  [{cid}] {email}  member {member_number or '-'}  ({fields})")
+
+
+@app.command("pull-orders")
+def pull_orders_cmd():
+    """Mirror open, unfulfilled Shopify orders into azure.orders and refresh locally open ones."""
+    counts = pull_orders()
+    typer.echo(f"  orders written:        {counts['pulled']:>6}")
+    typer.echo(f"  line items written:    {counts['line_items']:>6}")
+    typer.echo(f"  non-Azure line items:  {counts['unlinked_items']:>6}")
+    typer.echo(f"  left the open set:     {counts['closed']:>6}")
+    typer.echo(f"  open locally:          {counts['open']:>6}")
+
+
+@app.command("pull-customers")
+def pull_customers_cmd(
+    full: bool = typer.Option(
+        False, "--full",
+        help="Fetch every customer instead of only those updated since the last pull",
+    ),
+):
+    """Pull customer contact info from Shopify. Membership columns are never overwritten."""
+    counts = pull_customers(full=full)
+    typer.echo(f"  customers written:     {counts['pulled']:>6}")
+    typer.echo(f"  linked by email:       {counts['linked']:>6}")
+
+
+@app.command()
+def sync_customers(
+    customer_id: int = typer.Option(
+        None, "--customer-id", help="Only push this azure.customers.id (forces a push)"
+    ),
+    max_workers: int = typer.Option(
+        5, "--max-workers", help="Number of parallel Shopify requests"
+    ),
+    only: str = typer.Option(
+        None, "--only", help="Restrict to 'new' (create only) or 'dirty' (update only)"
+    ),
+    limit: int = typer.Option(
+        None, "--limit", help="Only process the first N rows"
+    ),
+):
+    """Create local-only customers in Shopify and push membership metafields for dirty
+    ones."""
+    if only not in (None, "new", "dirty"):
+        typer.echo("--only must be 'new' or 'dirty'", err=True)
+        raise typer.Exit(code=1)
+    update_customers(
+        customer_id=customer_id, max_workers=max_workers, limit=limit, only=only
+    )
+
+
+CONTACT_HELP = "Only used when creating a new local customer"
+
+
+def _parse_date(value: str | None):
+    if value is None:
+        return UNSET
+    if value == "":
+        return None
+    return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _clearable(value: str | None):
+    """Option not given -> leave alone; given as '' -> clear; otherwise set."""
+    if value is None:
+        return UNSET
+    return value or None
+
+
+@app.command("set-membership")
+def set_membership_cmd(
+    email: str = typer.Argument(..., help="Customer email (case-insensitive)"),
+    member_number: str = typer.Option(None, "--member-number", help="Pass '' to clear"),
+    membership_status: str = typer.Option(
+        None, "--status",
+        help="e.g. active, lapsed; 'active' adds the member tag in Shopify. Pass '' to clear",
+    ),
+    member_since: str = typer.Option(None, "--since", help="YYYY-MM-DD, or '' to clear"),
+    membership_expires: str = typer.Option(None, "--expires", help="YYYY-MM-DD, or '' to clear"),
+    notes: str = typer.Option(None, "--notes", help="Local-only notes. Pass '' to clear"),
+    first_name: str = typer.Option(None, "--first-name", help=CONTACT_HELP),
+    last_name: str = typer.Option(None, "--last-name", help=CONTACT_HELP),
+    phone: str = typer.Option(None, "--phone", help=CONTACT_HELP),
+    create: bool = typer.Option(
+        False, "--create", help="Create the customer locally if no row has this email"
+    ),
+    push: bool = typer.Option(
+        True, "--push/--no-push",
+        help="Push to Shopify now (default) or just mark the row dirty",
+    ),
+):
+    """Set membership info for a customer by email, creating them locally with --create."""
+    try:
+        row = set_membership(
+            email=email,
+            member_number=_clearable(member_number),
+            membership_status=_clearable(membership_status),
+            member_since=_parse_date(member_since),
+            membership_expires=_parse_date(membership_expires),
+            notes=_clearable(notes),
+            first_name=_clearable(first_name),
+            last_name=_clearable(last_name),
+            phone=_clearable(phone),
+            create=create,
+        )
+    except ValueError as e:
+        typer.echo(f"Bad date: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    if row is None:
+        typer.echo(f"No customer with email {email}; pass --create to add one", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"[{row['id']}] {row['email']}  {row['first_name'] or ''} {row['last_name'] or ''}".rstrip()
+    )
+    typer.echo(f"  member number: {row['member_number'] or '-'}")
+    typer.echo(f"  status:        {row['membership_status'] or '-'}")
+    typer.echo(f"  since:         {row['member_since'] or '-'}")
+    typer.echo(f"  expires:       {row['membership_expires'] or '-'}")
+    typer.echo(f"  notes:         {row['notes'] or '-'}")
+
+    if push:
+        update_customers(customer_id=row["id"])
+    else:
+        typer.echo("Row updated locally; run `sync-customers` to push")
+
+
+@app.command()
+def purchase_list(
+    commit: bool = typer.Option(
+        False, "--commit",
+        help="Record the listed demand as a placed supplier order so it drops off the list",
+    ),
+    supplier: str = typer.Option(
+        "azure", "--supplier",
+        help="Supplier name for --commit. 'azure' commits linked items; "
+             "anything else commits unlinked items",
+    ),
+    notes: str = typer.Option(None, "--notes", help="Notes to store on the supplier order"),
+    by_order: bool = typer.Option(
+        False, "--by-order", help="List per customer order line instead of per product"
+    ),
+):
+    """Show what to buy from suppliers to fill open orders, based on the last pull-orders."""
+    if by_order:
+        demand = get_purchase_demand()
+        if not demand:
+            typer.echo("Nothing outstanding")
+        for d in demand:
+            code = d["packaging_code"] or f"(not Azure: {d['sku'] or '-'})"
+            typer.echo(
+                f"  {d['order_name']:<8} {code:<24} x{d['outstanding']:<4} "
+                f"{d['title']} {d['variant_title'] or ''}  [{d['financial_status']}]"
+            )
+    else:
+        items = get_purchase_list()
+        if not items:
+            typer.echo("Nothing outstanding")
+        azure_items = [i for i in items if i["packaging_code"]]
+        other_items = [i for i in items if not i["packaging_code"]]
+
+        if azure_items:
+            typer.echo("Azure Standard:")
+            total = 0.0
+            for i in azure_items:
+                price = i["wholesale_dollars"]
+                line_total = (price or 0) * int(i["outstanding"])
+                total += line_total
+                price_text = f"${price:>8.2f}" if price is not None else "        -"
+                typer.echo(
+                    f"  {i['packaging_code']:<12} x{int(i['outstanding']):<4} "
+                    f"{price_text} {i['product_name']} — {i['size']}  "
+                    f"(stock {i['azure_stock']}, {i['order_count']} order(s))"
+                )
+            typer.echo(f"  estimated wholesale total: ${total:,.2f}")
+
+        if other_items:
+            typer.echo("Not from Azure:")
+            for i in other_items:
+                typer.echo(
+                    f"  {i['sku'] or '-':<12} x{int(i['outstanding']):<4} "
+                    f"{i['product_name']} — {i['size'] or ''}  ({i['order_count']} order(s))"
+                )
+
+    if commit:
+        counts = commit_supplier_order(supplier=supplier, notes=notes)
+        if counts["supplier_order_id"]:
+            typer.echo(
+                f"Recorded supplier order {counts['supplier_order_id']} for {supplier}: "
+                f"{counts['line_items']} line item(s), {counts['units']} unit(s)"
+            )
 
 
 __all__ = ["app"]

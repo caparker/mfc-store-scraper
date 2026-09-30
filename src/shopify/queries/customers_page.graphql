@@ -1,0 +1,28 @@
+query CustomersPage($first: Int!, $after: String, $query: String) {
+  customers(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      id
+      firstName
+      lastName
+      updatedAt
+      defaultEmailAddress {
+        emailAddress
+      }
+      defaultPhoneNumber {
+        phoneNumber
+      }
+      defaultAddress {
+        address1
+        address2
+        city
+        provinceCode
+        zip
+        countryCodeV2
+      }
+    }
+  }
+}

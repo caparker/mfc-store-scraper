@@ -43,7 +43,7 @@ Run `uv run python -m main --help` to see the full list.
 
 | Command | Description |
 | --- | --- |
-| `run` | Run the full pipeline: scrape → create new → update dirty products → update dirty variants → push changed stock → dump DB. |
+| `run` | Run the full pipeline: scrape → create new → update dirty products → update dirty variants → push changed stock → pull customers → push membership → pull open orders → dump DB. |
 | `status` | Show a summary of items pending sync to Shopify. `--verbose` also shows samples. |
 | `sync-products` | Create new products and push dirty ones to Shopify. `--only new` or `--only dirty` to restrict. `--no-draft` creates new products as ACTIVE. |
 | `pull-status` | Reconcile local status with Shopify: pull each product's status, mark rows whose product was deleted in Shopify as `DELETED`, and report orphans (Shopify products with vendor Azure Standard but no DB row) and duplicates (orphans whose `internal.id` metafield names an Azure product the DB links to a different Shopify product). `--delete-duplicates` deletes non-ACTIVE duplicates from Shopify; add `--include-active` to delete ACTIVE ones too. `--dry-run` reports only. |
@@ -52,7 +52,12 @@ Run `uv run python -m main --help` to see the full list.
 | `sync-variants` | Push dirty packaging rows to Shopify (price, cost, inventory policy). |
 | `sync-stock` | Push changed stock to Shopify, 250 variants per request. |
 | `sync-handles` | Update Shopify product handles from DB values. |
-| `dump-db` | Dump the Postgres database to a timestamped SQL file. |
+| `pull-customers` | Pull customer contact info from Shopify into `azure.customers`. Incremental by default; `--full` fetches everyone. Never touches membership columns. |
+| `sync-customers` | Create local-only customers in Shopify and push membership metafields for dirty ones. `--only new` or `--only dirty`; `--customer-id` forces a push. |
+| `set-membership <email>` | Set membership columns for a customer by email (`--member-number`, `--status`, `--since`, `--expires`, `--notes`). `--create` adds a local row if none exists. Pushes to Shopify unless `--no-push`. Pass `''` to clear a value. |
+| `pull-orders` | Mirror open, unfulfilled Shopify orders and their line items into `azure.orders` / `azure.order_items`, and refresh locally open orders Shopify no longer lists. |
+| `purchase-list` | Show outstanding demand per product from open orders. `--by-order` lists per order line. `--commit` records the list as a placed supplier order so it drops off next time. |
+| `dump-db` | Dump the Postgres database to a timestamped SQL file. Customer and order rows are excluded unless `--include-customers`. |
 
 Common options: `--product-id`, `--packaging-code`, `--max-workers`, `--limit`.
 
@@ -98,6 +103,19 @@ uv run python -m main sync-variants --product-id 12345
 uv run python -m main sync-stock --product-id 12345
 ```
 
+**Buy from Azure to fill open orders:**
+```bash
+uv run python -m main pull-orders
+uv run python -m main purchase-list
+# place the order with Azure, then:
+uv run python -m main purchase-list --commit --notes "Azure drop 2026-10-03"
+```
+
+**Record a new member:**
+```bash
+uv run python -m main set-membership someone@example.com --member-number 0142 --status active --since 2026-09-29
+```
+
 ## How dirty tracking works
 
 Each scrape upserts rows into `azure.products` and `azure.packaging`. A trigger (`azure.set_updated_at_if_changed`) only bumps `updated_at` and records `last_changed_fields` when a tracked column actually changes. On `azure.packaging`, only `size` is tracked, since it is the only packaging column sent on a variant update; a new `azure.prices` row also makes the variant dirty. `stock` has its own sync, and the remaining columns are never sent to Shopify.
@@ -118,6 +136,20 @@ This means:
 - Re-running `azure scrape` with unchanged data won't dirty anything.
 - Re-running `run` after a successful pipeline is a no-op.
 - You can safely use `--limit` and re-run to chunk large syncs.
+
+## Customers and orders
+
+**Customers** live in `azure.customers` and have split ownership. Shopify owns the contact columns (email, name, phone, default address): `pull-customers` writes them and they are excluded from the dirty trigger, so a pull never marks a row dirty. The DB owns the membership columns (`member_number`, `membership_status`, `member_since`, `membership_expires`); changing any of them marks the row dirty and `sync-customers` pushes them to Shopify as metafields under the `membership` namespace. A status of `active` also adds the `member` tag in Shopify, anything else removes it. `notes` is local only.
+
+A customer created locally (no `shopify_customer_id`) is created in Shopify by `sync-customers`, sending contact columns once. If the same email later shows up in a pull under an existing Shopify customer, the local row is linked to it instead of duplicated. `pull-customers` is incremental: it asks Shopify for customers updated since the newest `remote_updated_at` held locally.
+
+**Orders** are a read-only mirror. `pull-orders` fetches every order Shopify lists as `status:open` and `fulfillment_status:unfulfilled` (which includes partially fulfilled), upserts it with its line items, and links each line item to `azure.packaging` by the `AZ-<code>` SKU. Locally open orders that Shopify no longer lists are re-fetched by id so their fulfillment or cancellation is recorded; orders that no longer exist are marked closed. Nothing is ever pushed to Shopify for orders.
+
+**Purchase list.** `azure.purchase_demand` computes, per open line item, `unfulfilled_quantity` minus what is already on a supplier order. `azure.purchase_list` sums that per packaging code with product name, size, Azure stock, and current wholesale price. Line items whose SKU does not match an Azure packaging row are listed separately as "Not from Azure". `purchase-list --commit` snapshots the current Azure demand into `azure.supplier_orders` / `azure.supplier_order_items`; with a `--supplier` other than `azure` it snapshots the unlinked items instead. If an order is later cancelled or fulfilled from stock, its committed quantity is simply no longer counted.
+
+**Shopify setup.** The app needs the `read_orders`, `read_customers`, and `write_customers` scopes and protected customer data access enabled in the Shopify dev dashboard. Regenerate the token after changing scopes; `check-connection` reports any missing scope. `read_orders` only returns the last 60 days of orders, which is enough for open orders.
+
+**Personal data.** `dump-db` excludes the rows of `azure.customers`, `azure.orders`, and `azure.order_items` by default so dump files carry no personal data. Pass `--include-customers` to include them.
 
 ## Collaborate
 

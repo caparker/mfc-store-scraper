@@ -1,0 +1,7 @@
+query OrdersByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Order {
+      ...OrderFields
+    }
+  }
+}
