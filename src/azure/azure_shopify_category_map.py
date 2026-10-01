@@ -9,6 +9,7 @@ are available as categories for Shopify.
 """
 
 AZURE_SHOPIFY_CATEGORY_MAP = {
+    "hardware":"gid://shopify/TaxonomyCategory/ha",
     "wood-stove-hearth":"gid://shopify/TaxonomyCategory/hg-5",
     "lip-care":"gid://shopify/TaxonomyCategory/hb-3-2-9",
     "candles-candle-making":"gid://shopify/TaxonomyCategory/ae-2-1-2-17-1",

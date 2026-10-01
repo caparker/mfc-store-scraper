@@ -28,6 +28,8 @@ class OrderModel(BaseModel):
     total_shipping: Optional[Decimal] = None
     total: Optional[Decimal] = None
     net_payment: Optional[Decimal] = None
+    total_refunded: Optional[Decimal] = None
+    remote_updated_at: Optional[datetime] = None
     last_pulled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -45,7 +47,11 @@ class OrderItemModel(BaseModel):
     title: Optional[str] = None
     variant_title: Optional[str] = None
     quantity: int
+    current_quantity: Optional[int] = None
     unfulfilled_quantity: int
+    cancelled_quantity: int = 0
+    returned_quantity: int = 0
+    status: Optional[str] = None
     original_unit_price: Optional[Decimal] = None
     discounted_unit_price: Optional[Decimal] = None
     discounted_total: Optional[Decimal] = None

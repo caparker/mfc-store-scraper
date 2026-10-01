@@ -11,12 +11,12 @@ class Mutations:
 
     _query_directory = os.path.dirname(os.path.abspath(__file__))
 
-    file_create = Path(os.path.join(_query_directory, "file_create.graphql")).read_text(
-        encoding="utf-8"
-    )
-
     generate_staged_uploads = Path(
         os.path.join(_query_directory, "generate_staged_uploads.graphql")
+    ).read_text(encoding="utf-8")
+
+    product_create_media = Path(
+        os.path.join(_query_directory, "product_create_media.graphql")
     ).read_text(encoding="utf-8")
 
     product_create = Path(

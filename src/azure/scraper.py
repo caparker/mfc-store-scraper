@@ -218,7 +218,7 @@ class AzureScraper:
 
                 sizes.append(pack.get("size"))
 
-                for image_url in pack.get("images"):
+                for position, image_url in enumerate(pack.get("images")):
                     media.append(
                         {
                             "packaging_code": pack.get("code"),
@@ -226,6 +226,7 @@ class AzureScraper:
                             "file_name": re.search(
                                 r"([0-9\-a-z]+)$", image_url
                             ).group(),
+                            "position": position,
                         }
                     )
 

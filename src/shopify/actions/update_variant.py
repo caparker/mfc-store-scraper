@@ -7,7 +7,6 @@ from src.db.models.packaging import PackagingModel
 from src.db.models.price import PriceModel
 from src.db.models.product import ProductModel
 from src.lib.logger import logger
-from src.shopify.actions import create_media
 from src.shopify.shopify import Shopify
 from src.shopify.mutations import Mutations
 from src.shopify.types.models.metafield import Metafield
@@ -43,19 +42,6 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
         )
     )
 
-    # packaging_media = MediaModel.model_validate(
-    #     db.fetchone(
-    #         sql.SQL(
-    #             """SELECT * FROM azure.media WHERE packaging_code = %(packaging_code)s LIMIT 1;"""
-    #         ),
-    #         {"packaging_code": packaging.code},
-    #         rows.class_row(MediaModel),
-    #     )
-    # )
-
-    # if not packaging_media.shopify_media_id:
-    #     packaging_media = create_media(packaging_media)
-
     # Get the most recent price set for variant
     packaging_price = PriceModel.model_validate(
         db.fetchone(
@@ -72,7 +58,7 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
         compareAtPrice=None,
         inventoryPolicy=ProductVariantInventoryPolicy.DENY,
         optionValues=[VariantOptionValueInput(name=packaging.size)],
-        mediaId=None,
+        mediaId=None,  # images are managed by sync-media
         price=f"{packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)):.2f}",
         metafields=[Metafield(value=str(packaging.id))],
     )

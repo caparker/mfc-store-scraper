@@ -1,6 +1,5 @@
 """General actions that can be taken against Shopify"""
 
-from .create_media import create_media
 from .create_product import (
     create_product,
     ProductCreateError,
@@ -18,6 +17,8 @@ from .add_products import add_products
 from .update_products import update_products
 from .update_variants import update_variants
 from .update_stock import update_stock
+from .sync_media import sync_media
+from .pull_media import pull_media
 from .set_product_status import set_product_status
 from .pull_product_status import pull_product_status
 from .pull_orders import pull_orders
@@ -27,7 +28,6 @@ from .purchase_list import get_purchase_list, get_purchase_demand, commit_suppli
 from .pipeline import run_pipeline
 
 __all__ = [
-    "create_media",
     "create_product",
     "ProductCreateError",
     "ProductHandleInUseError",
@@ -41,6 +41,8 @@ __all__ = [
     "update_products",
     "update_variants",
     "update_stock",
+    "sync_media",
+    "pull_media",
     "set_product_status",
     "pull_product_status",
     "pull_orders",

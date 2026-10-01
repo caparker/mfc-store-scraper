@@ -1,0 +1,31 @@
+query ProductsMediaByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Product {
+      id
+      media(first: 20) {
+        pageInfo {
+          hasNextPage
+        }
+        nodes {
+          id
+          status
+          ... on MediaImage {
+            image {
+              url
+            }
+          }
+        }
+      }
+      variants(first: 20) {
+        nodes {
+          id
+          media(first: 1) {
+            nodes {
+              id
+            }
+          }
+        }
+      }
+    }
+  }
+}

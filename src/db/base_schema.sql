@@ -148,29 +148,76 @@ CREATE TABLE IF NOT EXISTS azure.prices (
 CREATE INDEX IF NOT EXISTS idx_prices_packaging_code_created
   ON azure.prices (packaging_code, created_at DESC);
 
+-- One row per (packaging, image url) as listed by Azure, in Azure's order.
+-- Only the first image of each packaging (see azure.primary_media) is pushed to
+-- Shopify: it is created on the product and set as the variant image. The
+-- Shopify side is tracked explicitly rather than by updated_at:
+--   shopify_media_id / shopify_status  the media created on the product
+--                                      (UPLOADED, PROCESSING, READY, FAILED)
+--   variant_media_set_at               when the variant was pointed at it
+--   error / attempts / last_attempt_at what went wrong and how often
 CREATE TABLE IF NOT EXISTS azure.media (
     id SERIAL PRIMARY KEY,
     packaging_code TEXT NOT NULL REFERENCES azure.packaging(code) ON DELETE CASCADE,
     original_url TEXT NOT NULL,
     file_name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
     shopify_media_id TEXT,
+    shopify_status TEXT,
+    variant_media_set_at TIMESTAMPTZ,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
     shopify_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE(packaging_code, original_url)
 );
 
-CREATE OR REPLACE TRIGGER media_set_updated_at
-BEFORE UPDATE ON azure.packaging
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at_if_changed(
-    'updated_at', 'created_at',
-    'shopify_media_id', 'shopify_updated_at'
-);
+-- Existing databases were created before these columns existed.
+ALTER TABLE azure.media
+    ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0
+    , ADD COLUMN IF NOT EXISTS shopify_status TEXT
+    , ADD COLUMN IF NOT EXISTS variant_media_set_at TIMESTAMPTZ
+    , ADD COLUMN IF NOT EXISTS error TEXT
+    , ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0
+    , ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
 
+-- An earlier version attached this trigger to azure.packaging by mistake.
+DROP TRIGGER IF EXISTS media_set_updated_at ON azure.packaging;
 
 CREATE INDEX IF NOT EXISTS idx_packaging_products_id ON azure.packaging(products_id);
 CREATE INDEX IF NOT EXISTS idx_media_packaging_code ON azure.media(packaging_code);
+
+-- The image pushed to Shopify for each packaging: first in Azure's order.
+CREATE OR REPLACE VIEW azure.primary_media AS
+SELECT DISTINCT ON (packaging_code) *
+FROM azure.media
+ORDER BY packaging_code, position, id;
+
+-- Primary media for variants that exist in Shopify, with a sync state:
+--   done     variant points at the media
+--   failed   Shopify rejected the image, or three attempts have failed
+--   pending  everything else
+CREATE OR REPLACE VIEW azure.media_sync AS
+SELECT
+    m.*
+    , pack.id AS packaging_id
+    , pack.shopify_variant_id
+    , prod.id AS product_id
+    , prod.shopify_product_id
+    , prod.name AS product_name
+    , CASE
+        WHEN m.variant_media_set_at IS NOT NULL THEN 'done'
+        WHEN m.shopify_status = 'FAILED' OR m.attempts >= 3 THEN 'failed'
+        ELSE 'pending'
+      END AS sync_state
+FROM azure.primary_media m
+JOIN azure.packaging pack ON pack.code = m.packaging_code
+JOIN azure.products prod ON prod.id = pack.products_id
+WHERE pack.shopify_variant_id IS NOT NULL
+  AND prod.shopify_product_id IS NOT NULL
+  AND prod.shopify_status <> 'DELETED';
 
 CREATE OR REPLACE VIEW azure.current_prices AS
 SELECT DISTINCT ON (packaging_code) *
@@ -235,7 +282,8 @@ JOIN azure.packaging pk ON pk.code = curr.packaging_code
 JOIN azure.products p ON (pk.products_id = p.id)
 LEFT JOIN ranked prev
     ON prev.packaging_code = curr.packaging_code AND prev.rn = 2
-WHERE curr.rn = 1;
+WHERE curr.rn = 1
+    AND prev.retail_dollars IS NOT NULL;;
 
 CREATE OR REPLACE VIEW dirty_products AS
 SELECT
@@ -378,12 +426,16 @@ CREATE TABLE IF NOT EXISTS azure.orders (
     total_shipping NUMERIC(12, 2),
     total NUMERIC(12, 2),
     net_payment NUMERIC(12, 2),
+    total_refunded NUMERIC(12, 2),
+    -- Shopify's updatedAt as of the last pull; the next pull also asks for
+    -- orders updated since the newest value seen, open or closed.
+    remote_updated_at TIMESTAMPTZ,
     last_pulled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Existing databases were created before the money columns existed.
+-- Existing databases were created before these columns existed.
 ALTER TABLE azure.orders
     ADD COLUMN IF NOT EXISTS currency TEXT
     , ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12, 2)
@@ -391,7 +443,9 @@ ALTER TABLE azure.orders
     , ADD COLUMN IF NOT EXISTS total_discounts NUMERIC(12, 2)
     , ADD COLUMN IF NOT EXISTS total_shipping NUMERIC(12, 2)
     , ADD COLUMN IF NOT EXISTS total NUMERIC(12, 2)
-    , ADD COLUMN IF NOT EXISTS net_payment NUMERIC(12, 2);
+    , ADD COLUMN IF NOT EXISTS net_payment NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS total_refunded NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS remote_updated_at TIMESTAMPTZ;
 
 CREATE OR REPLACE TRIGGER orders_set_timestamp
 BEFORE UPDATE ON azure.orders
@@ -408,9 +462,26 @@ CREATE TABLE IF NOT EXISTS azure.order_items (
     packaging_code TEXT REFERENCES azure.packaging(code) ON DELETE SET NULL,
     title TEXT,
     variant_title TEXT,
+    -- quantity is what was ordered; current_quantity is what remains after
+    -- edits and refunds. cancelled_quantity was removed before fulfillment
+    -- (refund restockType CANCEL); returned_quantity was refunded after.
     quantity INTEGER NOT NULL DEFAULT 0,
+    current_quantity INTEGER,
     unfulfilled_quantity INTEGER NOT NULL DEFAULT 0,
+    cancelled_quantity INTEGER NOT NULL DEFAULT 0,
+    returned_quantity INTEGER NOT NULL DEFAULT 0,
+    status TEXT GENERATED ALWAYS AS (
+        CASE
+            WHEN COALESCE(current_quantity, quantity) = 0 AND returned_quantity > 0 THEN 'returned'
+            WHEN COALESCE(current_quantity, quantity) = 0 THEN 'removed'
+            WHEN COALESCE(current_quantity, quantity) < quantity THEN 'partial'
+            WHEN unfulfilled_quantity = 0 THEN 'fulfilled'
+            ELSE 'open'
+        END
+    ) STORED,
     -- Shop currency. discounted_* include allocated order-level discounts.
+    -- discounted_total is Shopify's figure for the ordered quantity; it is not
+    -- reduced when items are removed. Use discounted_unit_price * current_quantity.
     original_unit_price NUMERIC(12, 2),
     discounted_unit_price NUMERIC(12, 2),
     discounted_total NUMERIC(12, 2),
@@ -421,7 +492,19 @@ CREATE TABLE IF NOT EXISTS azure.order_items (
 ALTER TABLE azure.order_items
     ADD COLUMN IF NOT EXISTS original_unit_price NUMERIC(12, 2)
     , ADD COLUMN IF NOT EXISTS discounted_unit_price NUMERIC(12, 2)
-    , ADD COLUMN IF NOT EXISTS discounted_total NUMERIC(12, 2);
+    , ADD COLUMN IF NOT EXISTS discounted_total NUMERIC(12, 2)
+    , ADD COLUMN IF NOT EXISTS current_quantity INTEGER
+    , ADD COLUMN IF NOT EXISTS cancelled_quantity INTEGER NOT NULL DEFAULT 0
+    , ADD COLUMN IF NOT EXISTS returned_quantity INTEGER NOT NULL DEFAULT 0
+    , ADD COLUMN IF NOT EXISTS status TEXT GENERATED ALWAYS AS (
+        CASE
+            WHEN COALESCE(current_quantity, quantity) = 0 AND returned_quantity > 0 THEN 'returned'
+            WHEN COALESCE(current_quantity, quantity) = 0 THEN 'removed'
+            WHEN COALESCE(current_quantity, quantity) < quantity THEN 'partial'
+            WHEN unfulfilled_quantity = 0 THEN 'fulfilled'
+            ELSE 'open'
+        END
+    ) STORED;
 
 CREATE OR REPLACE TRIGGER order_items_set_timestamp
 BEFORE UPDATE ON azure.order_items
@@ -442,16 +525,57 @@ CREATE TABLE IF NOT EXISTS azure.supplier_orders (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- The first version of supplier_order_items was one row per customer line
+-- item with no price. Drop it (and the views that depend on it) so the
+-- per-variant table below can be created; the data it held was never used.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'azure'
+          AND table_name = 'supplier_order_items'
+          AND column_name = 'order_items_id'
+    ) THEN
+        DROP VIEW IF EXISTS azure.purchase_list;
+        DROP VIEW IF EXISTS azure.purchase_demand;
+        DROP TABLE azure.supplier_order_items;
+    END IF;
+END
+$$;
+
+-- One row per variant purchased. unit_price is what was paid per packaging
+-- item; it defaults to the Azure retail price current when the order was
+-- committed and can be corrected from the invoice. Non-Azure items have no
+-- packaging_code and are identified by sku.
 CREATE TABLE IF NOT EXISTS azure.supplier_order_items (
     id SERIAL PRIMARY KEY,
     supplier_orders_id INTEGER NOT NULL REFERENCES azure.supplier_orders(id) ON DELETE CASCADE,
+    packaging_code TEXT REFERENCES azure.packaging(code) ON DELETE SET NULL,
+    sku TEXT,
+    quantity INTEGER NOT NULL,
+    unit_price NUMERIC(12, 2)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_order_items_supplier_orders_id
+  ON azure.supplier_order_items(supplier_orders_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_order_items_packaging_code
+  ON azure.supplier_order_items(packaging_code);
+
+-- Which customer line items a supplier order item covers, and how many units
+-- of each. A line item can be split across supplier orders when the first
+-- purchase was short.
+CREATE TABLE IF NOT EXISTS azure.supplier_order_allocations (
+    id SERIAL PRIMARY KEY,
+    supplier_order_items_id INTEGER NOT NULL REFERENCES azure.supplier_order_items(id) ON DELETE CASCADE,
     order_items_id INTEGER NOT NULL REFERENCES azure.order_items(id) ON DELETE CASCADE,
-    packaging_code TEXT,
     quantity INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_supplier_order_items_order_items_id
-  ON azure.supplier_order_items(order_items_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_order_allocations_order_items_id
+  ON azure.supplier_order_allocations(order_items_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_order_allocations_supplier_order_items_id
+  ON azure.supplier_order_allocations(supplier_order_items_id);
 
 CREATE OR REPLACE VIEW azure.open_orders AS
 SELECT *
@@ -475,20 +599,23 @@ SELECT
     , oi.title
     , oi.variant_title
     , oi.unfulfilled_quantity
-    , COALESCE(soi.ordered, 0) AS supplier_ordered
-    , GREATEST(oi.unfulfilled_quantity - COALESCE(soi.ordered, 0), 0) AS outstanding
+    , COALESCE(soa.ordered, 0) AS supplier_ordered
+    , GREATEST(oi.unfulfilled_quantity - COALESCE(soa.ordered, 0), 0) AS outstanding
 FROM azure.order_items oi
 JOIN azure.open_orders o ON o.id = oi.orders_id
 LEFT JOIN LATERAL (
     SELECT sum(quantity) AS ordered
-    FROM azure.supplier_order_items
+    FROM azure.supplier_order_allocations
     WHERE order_items_id = oi.id
-) soi ON TRUE
+) soa ON TRUE
 WHERE oi.unfulfilled_quantity > 0;
 
 -- Per packaging code: what to buy from Azure. Items without a packaging code
--- (non-Azure products) are grouped by SKU and title instead.
-CREATE OR REPLACE VIEW azure.purchase_list AS
+-- (non-Azure products) are grouped by SKU and title instead. retail_dollars is
+-- the price recorded on the supplier order when demand is committed.
+-- Dropped first: CREATE OR REPLACE cannot add a column mid-view.
+DROP VIEW IF EXISTS azure.purchase_list;
+CREATE VIEW azure.purchase_list AS
 SELECT
     pd.packaging_code
     , pd.sku
@@ -496,6 +623,7 @@ SELECT
     , COALESCE(pk.size, pd.variant_title) AS size
     , p.id AS products_id
     , pk.stock AS azure_stock
+    , cp.retail_dollars
     , cp.wholesale_dollars
     , cp.wholesale_unit
     , sum(pd.outstanding) AS outstanding
@@ -508,11 +636,32 @@ LEFT JOIN azure.current_prices cp ON cp.packaging_code = pd.packaging_code
 WHERE pd.outstanding > 0
 GROUP BY
     pd.packaging_code, pd.sku, p.name, pd.title, pk.size, pd.variant_title
-    , p.id, pk.stock, cp.wholesale_dollars, cp.wholesale_unit
+    , p.id, pk.stock, cp.retail_dollars, cp.wholesale_dollars, cp.wholesale_unit
 ORDER BY pd.packaging_code IS NULL, product_name, size;
 
+-- Per customer line item: units bought from a supplier and what they cost,
+-- taken from the supplier order items that cover it. Lines never purchased
+-- (fulfilled from stock, or not yet ordered) are absent.
+CREATE OR REPLACE VIEW azure.order_item_cost AS
+SELECT
+    soa.order_items_id
+    , sum(soa.quantity) AS purchased_quantity
+    , sum(soa.quantity * soi.unit_price) AS purchased_cost
+    , CASE
+        WHEN sum(soa.quantity) > 0
+        THEN round(sum(soa.quantity * soi.unit_price) / sum(soa.quantity), 2)
+      END AS unit_cost
+    , min(so.placed_at) AS first_purchased_at
+    , max(so.placed_at) AS last_purchased_at
+FROM azure.supplier_order_allocations soa
+JOIN azure.supplier_order_items soi ON soi.id = soa.supplier_order_items_id
+JOIN azure.supplier_orders so ON so.id = soi.supplier_orders_id
+GROUP BY soa.order_items_id;
+
 -- Margin per sold line: what the customer paid per unit against the Azure
--- wholesale price current at query time (not the price on the purchase date).
+-- wholesale and retail prices current at query time (not the price on the
+-- purchase date). Uses current_quantity, so removed and returned units do not
+-- count as sold.
 -- Dropped first: CREATE OR REPLACE cannot change a view column's type.
 DROP VIEW IF EXISTS azure.order_item_margin;
 CREATE VIEW azure.order_item_margin AS
@@ -526,24 +675,29 @@ SELECT
     , oi.sku
     , oi.title
     , oi.variant_title
+    , oi.status
     , oi.quantity
+    , q.current_quantity
     , oi.original_unit_price
     , oi.discounted_unit_price
-    , oi.discounted_total
+    , (oi.discounted_unit_price * q.current_quantity) AS line_total
     , cp.retail_dollars
     , cp.retail_unit
     , cp.wholesale_dollars
     , cp.wholesale_unit
     , (oi.discounted_unit_price - cp.wholesale) AS wholesale_unit_margin
-    , (oi.discounted_total - cp.wholesale * oi.quantity) AS wholesale_line_margin
+    , ((oi.discounted_unit_price - cp.wholesale) * q.current_quantity) AS wholesale_line_margin
     , (oi.discounted_unit_price - cp.retail) AS retail_unit_margin
-    , (oi.discounted_total - cp.retail * oi.quantity) AS retail_line_margin
+    , ((oi.discounted_unit_price - cp.retail) * q.current_quantity) AS retail_line_margin
     , CASE
         WHEN oi.discounted_unit_price > 0
         THEN round((oi.discounted_unit_price - cp.wholesale) / oi.discounted_unit_price * 100, 1)
       END AS margin_percent
 FROM azure.order_items oi
 JOIN azure.orders o ON o.id = oi.orders_id
+CROSS JOIN LATERAL (
+    SELECT COALESCE(oi.current_quantity, oi.quantity) AS current_quantity
+) q
 LEFT JOIN LATERAL (
     SELECT wholesale_dollars
       , wholesale_unit

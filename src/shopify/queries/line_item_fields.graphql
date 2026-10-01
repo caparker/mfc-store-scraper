@@ -4,7 +4,10 @@ fragment LineItemFields on LineItem {
   title
   variantTitle
   quantity
+  currentQuantity
   unfulfilledQuantity
+  refundableQuantity
+  nonFulfillableQuantity
   originalUnitPriceSet { shopMoney { amount } }
   discountedUnitPriceSet { shopMoney { amount } }
   discountedTotalSet { shopMoney { amount } }

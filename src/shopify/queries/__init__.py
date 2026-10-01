@@ -11,8 +11,8 @@ class Queries:
 
     _query_directory = os.path.dirname(os.path.abspath(__file__))
 
-    check_file_status = Path(
-        os.path.join(_query_directory, "check_file_status.graphql")
+    products_media_by_ids = Path(
+        os.path.join(_query_directory, "products_media_by_ids.graphql")
     ).read_text(encoding="utf-8")
 
     current_app_installation = Path(
@@ -52,9 +52,13 @@ class Queries:
     ).read_text(encoding="utf-8") + _line_item_fields
 
     # Order queries share the OrderFields/LineItemFields fragments.
-    orders_open_page = Path(
-        os.path.join(_query_directory, "orders_open_page.graphql")
+    orders_page = Path(
+        os.path.join(_query_directory, "orders_page.graphql")
     ).read_text(encoding="utf-8") + _order_fields
+
+    order_refunds_by_ids = Path(
+        os.path.join(_query_directory, "order_refunds_by_ids.graphql")
+    ).read_text(encoding="utf-8")
 
     orders_by_ids = Path(
         os.path.join(_query_directory, "orders_by_ids.graphql")

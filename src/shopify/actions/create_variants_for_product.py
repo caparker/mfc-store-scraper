@@ -5,12 +5,10 @@ from typing import List
 from psycopg import rows, sql
 
 from src.db.postgres import Database, MARKUP_PERCENTAGE
-from src.db.models.media import MediaModel
 from src.db.models.packaging import PackagingModel
 from src.db.models.price import PriceModel
 from src.db.models.product import ProductModel
 from src.lib.logger import logger
-from src.shopify.actions import create_media
 from src.shopify.shopify import Shopify
 from src.shopify.mutations import Mutations
 from src.shopify.types.models.metafield import Metafield
@@ -57,28 +55,6 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
             logger.debug(f"Variant already exists, skipping [{pack.model_dump_json()}]")
             continue
 
-        # TODO: we'll come back to this, create_media just
-        # takes too long when we're uploading everything
-        shopify_media_id = None
-        # media = db.fetchone(
-        #     sql.SQL(
-        #         """SELECT * FROM azure.media WHERE packaging_code = %(packaging_code)s"""
-        #     ),
-        #     {"packaging_code": packaging.code},
-        #     rows.class_row(MediaModel),
-        # )
-
-        # if media:
-        #     packaging_media = MediaModel.model_validate(media)
-
-        #     if not packaging_media.shopify_media_id:
-        #         packaging_media = create_media(packaging_media)
-
-        #     shopify_media_id = packaging_media.shopify_media_id
-        # else:
-        #     # Not all packaging have associated media
-        #     shopify_media_id = None
-
         packaging_price = PriceModel.model_validate(
             db.fetchone(
                 sql.SQL(
@@ -104,7 +80,7 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
             inventoryItem=InventoryItemInput(cost=cost, sku=f"AZ-{pack.code}"),
             inventoryPolicy=ProductVariantInventoryPolicy.DENY,
             optionValues=[VariantOptionValueInput(name=pack.size)],
-            mediaId=shopify_media_id,
+            mediaId=None,  # set by sync-media once the variant exists
             price=f"{round(packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)), 2):.2f}",
             metafields=[Metafield(value=str(pack.id))],
         )

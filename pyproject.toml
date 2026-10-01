@@ -8,6 +8,7 @@ dependencies = [
     "algoliasearch>=4.35.0",
     "beautifulsoup4>=4.14.3",
     "loguru>=0.7.3",
+    "pillow>=12.3.0",
     "playwright>=1.63.0",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",

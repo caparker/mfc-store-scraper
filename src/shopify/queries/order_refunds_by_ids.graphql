@@ -1,0 +1,20 @@
+query OrderRefundsByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Order {
+      id
+      refunds(first: 10) {
+        id
+        createdAt
+        refundLineItems(first: 50) {
+          nodes {
+            quantity
+            restockType
+            lineItem {
+              id
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
-"""End-to-end pipeline: scrape -> sync products -> sync variants -> sync stock
--> pull customers -> sync customers -> pull orders -> dump."""
+"""End-to-end pipeline: scrape -> sync products -> sync variants -> sync media
+-> sync stock -> pull customers -> sync customers -> pull orders -> dump."""
 
 from src.azure.cli.get_products_from_azure import get_products_from_azure
 from .dump_database import dump_database
@@ -7,6 +7,7 @@ from .add_products import add_products
 from .update_products import update_products
 from .update_variants import update_variants
 from .update_stock import update_stock
+from .sync_media import sync_media
 from .pull_customers import pull_customers
 from .update_customers import update_customers
 from .pull_orders import pull_orders
@@ -31,6 +32,9 @@ def run_pipeline() -> None:
 
     _section("Updating dirty variants in Shopify")
     update_variants()
+
+    _section("Syncing product images to Shopify")
+    sync_media()
 
     _section("Updating stock in Shopify")
     update_stock()

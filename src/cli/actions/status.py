@@ -54,6 +54,12 @@ def sync_status() -> dict[str, int]:
                   AND prod.shopify_status <> 'DELETED'
                   AND pack.stock IS DISTINCT FROM pack.shopify_stock) AS stock_dirty,
 
+            (SELECT count(*) FROM azure.media_sync
+                WHERE sync_state = 'pending') AS media_pending,
+
+            (SELECT count(*) FROM azure.media_sync
+                WHERE sync_state = 'failed') AS media_failed,
+
             (SELECT count(*) FROM azure.customers
                 WHERE shopify_customer_id IS NULL) AS customers_new,
 
@@ -78,11 +84,13 @@ def sync_status() -> dict[str, int]:
         "variants_new": row[3],
         "variants_dirty": row[4],
         "stock_dirty": row[5],
-        "customers_new": row[6],
-        "customers_dirty": row[7],
-        "orders_open": row[8],
-        "purchase_items": row[9],
-        "purchase_units": int(row[10]),
+        "media_pending": row[6],
+        "media_failed": row[7],
+        "customers_new": row[8],
+        "customers_dirty": row[9],
+        "orders_open": row[10],
+        "purchase_items": row[11],
+        "purchase_units": int(row[12]),
     }
 
 
@@ -170,6 +178,17 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
         {"limit": limit},
     )
 
+    media_failed = db.fetchall(
+        sql.SQL("""
+            SELECT id, packaging_code, product_name, attempts, error
+            FROM azure.media_sync
+            WHERE sync_state = 'failed'
+            ORDER BY last_attempt_at DESC NULLS LAST
+            LIMIT %(limit)s
+        """),
+        {"limit": limit},
+    )
+
     customers_new = db.fetchall(
         sql.SQL("""
             SELECT id, email, member_number
@@ -199,6 +218,7 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
         "variants_new": variants_new,
         "variants_dirty": variants_dirty,
         "stock_dirty": stock_dirty,
+        "media_failed": media_failed,
         "customers_new": customers_new,
         "customers_dirty": customers_dirty,
     }

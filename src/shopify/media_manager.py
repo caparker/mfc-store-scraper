@@ -1,117 +1,188 @@
-"""Module for managing image media lifecycle for shopify"""
+"""Fetch a vendor image and put it in front of Shopify's staged upload endpoint.
 
-import shutil
-import os
+Shopify will not fetch Azure's image URLs itself: Azure serves them as
+application/octet-stream with no extension and Shopify rejects that. So the
+bytes are downloaded here, resized, re-encoded with a real content type, and
+posted to a staged upload target whose resourceUrl is then handed to
+productCreateMedia.
+"""
+
+from dataclasses import dataclass
+from io import BytesIO
+from urllib.parse import urlparse
+
 import requests
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-from src.shopify.shopify import Shopify
 from src.shopify.mutations import Mutations
+from src.shopify.queries import Queries
+from src.shopify.shopify import Shopify, ShopifyQueryError
+
+# Longest edge after resizing. Shopify's own limit is 4472px on either side.
+MAX_EDGE = 2048
+JPEG_QUALITY = 85
+DOWNLOAD_TIMEOUT = 60
+UPLOAD_TIMEOUT = 120
 
 
 class MediaDownloadFailedError(Exception):
-    """Error thrown when a media download fails"""
+    """The vendor did not return a usable image."""
 
-    def __init__(self, message: str, code: int):
+    def __init__(self, message: str, code: int | None = None, permanent: bool = False):
         self.message = message
         self.code = code
+        # permanent: retrying will not help (404, not an image).
+        self.permanent = permanent
         super().__init__(self.message)
 
 
 class StagedUploadFailedError(Exception):
-    """Error thrown when a staged upload fails"""
+    """Shopify's staged upload endpoint rejected the file."""
 
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
 
 
-class MediaManager:
-    """Manages uploading media to Shopify"""
+@dataclass
+class ImageFile:
+    """An image ready to upload."""
 
-    def download(self, file_name: str, url: str, path: str) -> str:
-        """Download file at `url` to `dir` return file path"""
-        resp = requests.get(url, stream=True, timeout=10)
-        if resp.status_code == 200:
-            file_path = os.path.join(path, f"{file_name}.png")
+    file_name: str
+    mime_type: str
+    data: bytes
 
-            with open(file_path, "wb") as file:
-                resp.raw.decode_content = True
-                shutil.copyfileobj(resp.raw, file)
 
-            return file_path
+def fetch_image(file_name: str, url: str) -> ImageFile:
+    """Download `url`, resize it to fit MAX_EDGE, and return encoded bytes.
 
-        raise MediaDownloadFailedError(message=f'Download response code: {resp.status_code}', code=resp.status_code)
+    Output is JPEG unless the source has transparency, in which case PNG.
+    """
+    try:
+        resp = requests.get(url, timeout=DOWNLOAD_TIMEOUT)
+    except requests.RequestException as err:
+        raise MediaDownloadFailedError(f"download error: {err}") from err
 
-    def upload_image_to_staged_target(self, staged_target: dict, image_path: str):
-        """
-        From Shopify bot to help upload a file to the staged target
+    if resp.status_code != 200:
+        raise MediaDownloadFailedError(
+            f"download response code: {resp.status_code}",
+            code=resp.status_code,
+            permanent=resp.status_code in (404, 410),
+        )
 
-        staged_target: one element from stagedUploadsCreate.stagedTargets
+    try:
+        image = Image.open(BytesIO(resp.content))
+        image.load()
+    except (UnidentifiedImageError, OSError) as err:
+        raise MediaDownloadFailedError(
+            f"not an image: {err}", permanent=True
+        ) from err
+
+    image = ImageOps.exif_transpose(image)
+    image.thumbnail((MAX_EDGE, MAX_EDGE))
+
+    has_alpha = image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+    out = BytesIO()
+    if has_alpha:
+        image.convert("RGBA").save(out, format="PNG", optimize=True)
+        return ImageFile(f"{file_name}.png", "image/png", out.getvalue())
+
+    image.convert("RGB").save(out, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    return ImageFile(f"{file_name}.jpg", "image/jpeg", out.getvalue())
+
+
+def stage_uploads(shopify: Shopify, files: list[ImageFile]) -> list[dict]:
+    """Ask Shopify for one staged upload target per file, in the same order."""
+    resp = shopify.query_file(
+        Mutations.generate_staged_uploads,
         {
-            "url": "...",
-            "resourceUrl": "...",
-            "parameters": [
-            {"name": "key", "value": "..."},
-            {"name": "Content-Type", "value": "image/jpeg"},
-            ...
+            "input": [
+                {
+                    "filename": f.file_name,
+                    "mimeType": f.mime_type,
+                    "fileSize": str(len(f.data)),
+                    "resource": "IMAGE",
+                    "httpMethod": "POST",
+                }
+                for f in files
             ]
-        }
-        image_path: local path to the image file, e.g. "./my-image.jpg"
-        """
-        url = staged_target["url"]
-        params = staged_target["parameters"]
+        },
+    )
+    if resp.get("errors"):
+        raise StagedUploadFailedError(f"{resp['errors']}")
 
-        # Build form fields from parameters
-        data = {}
-        for p in params:
-            # All parameters must be sent as regular form fields
-            data[p["name"]] = p["value"]
+    data = resp["data"]["stagedUploadsCreate"]
+    if data["userErrors"]:
+        raise StagedUploadFailedError(f"{data['userErrors']}")
 
-        # Open the image file as binary
-        with open(image_path, "rb") as f:
-            # `files` tells requests to send multipart/form-data
-            # The field name is almost always "file" for these staged uploads
-            files = {
-                "file": (
-                    image_path,
-                    f,
-                    data.get("Content-Type", "application/octet-stream"),
-                )
-            }
-
-            response = requests.post(url, data=data, files=files, timeout=10)
-
-        # Staged upload services usually return 201 or 204 on success
-        if response.status_code not in (200, 201, 204):
-            raise StagedUploadFailedError(
-                f"Staged upload failed: {response.status_code} {response.text}"
-            )
-
-        return response
-
-    def generate_staged_upload(self, file_name: str):
-        """Generate handle for uploading files"""
-
-        staged_upload_input = [
-            {
-                "filename": file_name,
-                "mimeType": "image/png",
-                "resource": "IMAGE",
-                "httpMethod": "POST",
-            }
-        ]
-
-        s = Shopify()
-        return s.query_file(
-            Mutations.generate_staged_uploads,
-            {"input": staged_upload_input},
+    targets = data["stagedTargets"]
+    if len(targets) != len(files):
+        raise StagedUploadFailedError(
+            f"asked for {len(files)} staged target(s), got {len(targets)}"
         )
+    return targets
 
-    def create_file(self, original_source: str):
-        """Create a file from staged upload"""
 
-        s = Shopify()
-        return s.query_file(
-            Mutations.file_create,
-            {"files": [{"originalSource": original_source}]},
+def upload_to_target(target: dict, image: ImageFile) -> str:
+    """POST the file to its staged target and return the resourceUrl for fileCreate."""
+    form = {p["name"]: p["value"] for p in target["parameters"]}
+    resp = requests.post(
+        target["url"],
+        data=form,
+        files={"file": (image.file_name, image.data, image.mime_type)},
+        timeout=UPLOAD_TIMEOUT,
+    )
+    if resp.status_code not in (200, 201, 204):
+        raise StagedUploadFailedError(
+            f"staged upload failed: {resp.status_code} {resp.text[:300]}"
         )
+    return target["resourceUrl"]
+
+
+# ---------------------------------------------------------------------- #
+# Reading media back from Shopify
+# ---------------------------------------------------------------------- #
+
+PRODUCTS_PER_REQUEST = 10
+
+
+def fetch_products_media(shopify: Shopify, product_gids: list[str]) -> dict[str, dict]:
+    """Return {product gid: node} with each product's media and variant media.
+
+    Products Shopify no longer has are omitted. Media lists are capped at the
+    query's page size; `node["media"]["pageInfo"]["hasNextPage"]` says whether
+    the list is complete.
+    """
+    found: dict[str, dict] = {}
+    for start in range(0, len(product_gids), PRODUCTS_PER_REQUEST):
+        chunk = product_gids[start:start + PRODUCTS_PER_REQUEST]
+        resp = shopify.query_file(Queries.products_media_by_ids, {"ids": chunk})
+        if resp.get("errors"):
+            raise ShopifyQueryError(f"{resp['errors']}")
+        for node in resp["data"]["nodes"]:
+            if node:
+                found[node["id"]] = node
+    return found
+
+
+def cdn_file_name(url: str | None) -> str | None:
+    """`.../files/<name>.jpg?v=1` -> `<name>`; None when there is no url."""
+    if not url:
+        return None
+    base = urlparse(url).path.rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[0] if "." in base else base
+
+
+def match_media_by_name(media_nodes: list[dict], file_name: str) -> dict | None:
+    """Find the product media whose CDN file name is `file_name`.
+
+    Shopify keeps the uploaded file name, adding a suffix (`<name>_1`) when a
+    file with that name already exists, so a prefix match is also accepted.
+    """
+    for node in media_nodes:
+        name = cdn_file_name((node.get("image") or {}).get("url"))
+        if name and (name == file_name or name.startswith(f"{file_name}_")):
+            return node
+    return None

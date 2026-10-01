@@ -127,9 +127,10 @@ def get_products_from_azure(limit: int | None = None):
 
     media_query = sql.SQL(
         """
-        INSERT INTO azure.media (packaging_code, original_url, file_name)
-        VALUES (%(packaging_code)s, %(original_url)s, %(file_name)s)
-        ON CONFLICT (packaging_code, original_url) DO NOTHING;
+        INSERT INTO azure.media (packaging_code, original_url, file_name, position)
+        VALUES (%(packaging_code)s, %(original_url)s, %(file_name)s, %(position)s)
+        ON CONFLICT (packaging_code, original_url) DO UPDATE SET
+            position = EXCLUDED.position;
         """
     )
 

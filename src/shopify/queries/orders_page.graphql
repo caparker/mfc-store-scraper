@@ -1,4 +1,4 @@
-query OrdersOpenPage($first: Int!, $after: String, $query: String) {
+query OrdersPage($first: Int!, $after: String, $query: String) {
   orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT) {
     pageInfo {
       hasNextPage

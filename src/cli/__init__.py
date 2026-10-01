@@ -7,6 +7,8 @@ from src.shopify.actions import (
     update_products,
     update_variants,
     update_stock,
+    sync_media,
+    pull_media,
     dump_database,
     run_pipeline,
     set_product_status,
@@ -66,7 +68,7 @@ def check_connection():
 
 @app.command()
 def run():
-    """Run the full pipeline: scrape → sync products/variants/stock → pull customers
+    """Run the full pipeline: scrape → sync products/variants/images/stock → pull customers
     → sync customers → pull orders → dump."""
     run_pipeline()
 
@@ -132,6 +134,66 @@ def sync_stock(
         max_workers=max_workers,
         limit=limit,
     )
+
+@app.command("sync-media")
+def sync_media_cmd(
+    packaging_code: str = typer.Option(
+        None, "--packaging-code", help="Only sync the image for this azure.packaging.code"
+    ),
+    product_id: int = typer.Option(
+        None, "--product-id",
+        help="Sync every variant image for this azure.products.id (retries failed ones)",
+    ),
+    max_workers: int = typer.Option(
+        3, "--max-workers", help="Number of products handled in parallel"
+    ),
+    limit: int = typer.Option(
+        None, "--limit", help="Only process the first N images"
+    ),
+):
+    """Create each variant's first Azure image on its Shopify product and set it as the
+    variant image."""
+    counts = sync_media(
+        product_id=product_id,
+        packaging_code=packaging_code,
+        max_workers=max_workers,
+        limit=limit,
+    )
+    typer.echo(f"  uploaded:            {counts.get('uploaded', 0):>6}")
+    typer.echo(f"  reused on product:   {counts.get('reused', 0):>6}")
+    typer.echo(f"  ready:               {counts.get('ready', 0):>6}")
+    typer.echo(f"  variant images set:  {counts.get('variants', 0):>6}")
+    typer.echo(f"  detached:            {counts.get('detached', 0):>6}")
+    typer.echo(f"  failed:              {counts.get('failed', 0):>6}")
+
+
+@app.command("pull-media")
+def pull_media_cmd(
+    product_id: int = typer.Option(
+        None, "--product-id", help="Only reconcile this azure.products.id"
+    ),
+    limit: int = typer.Option(
+        None, "--limit", help="Only reconcile the first N products"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report differences without writing anywhere"
+    ),
+):
+    """Match azure.media to the media actually on each Shopify product, by file name."""
+    counts = pull_media(product_id=product_id, limit=limit, dry_run=dry_run)
+    typer.echo(f"  products checked:        {counts['products']:>6}")
+    typer.echo(f"  rows matched:            {counts['matched']:>6}")
+    typer.echo(f"  rows detached:           {counts['detached']:>6}")
+    typer.echo(f"  variant images set:      {counts['variant_set']:>6}")
+    typer.echo(f"  variant images cleared:  {counts['variant_cleared']:>6}")
+    typer.echo(f"  Shopify media unmatched: {counts['unmatched_in_shopify']:>6}")
+    if counts["incomplete_products"]:
+        typer.echo(
+            f"  products with more media than checked: {counts['incomplete_products']}"
+        )
+    if counts["missing_products"]:
+        typer.echo(f"  products missing in Shopify: {counts['missing_products']}")
+
 
 @app.command()
 def sync_products(
@@ -247,7 +309,7 @@ def status(
     counts = sync_status()
     pending_keys = (
         "products_new", "products_dirty", "variants_new", "variants_dirty",
-        "stock_dirty", "customers_new", "customers_dirty",
+        "stock_dirty", "media_pending", "customers_new", "customers_dirty",
     )
     total = sum(counts[k] for k in pending_keys)
 
@@ -257,10 +319,12 @@ def status(
     typer.echo(f"  variants new:    {counts['variants_new']:>6}")
     typer.echo(f"  variants dirty:  {counts['variants_dirty']:>6}")
     typer.echo(f"  stock dirty:     {counts['stock_dirty']:>6}")
+    typer.echo(f"  images pending:  {counts['media_pending']:>6}")
     typer.echo(f"  customers new:   {counts['customers_new']:>6}")
     typer.echo(f"  customers dirty: {counts['customers_dirty']:>6}")
     typer.echo(f"  total pending:   {total:>6}")
     typer.echo(f"  products deleted in Shopify (not synced): {counts['products_deleted']}")
+    typer.echo(f"  images failed (not retried): {counts['media_failed']}")
     typer.echo("Orders:")
     typer.echo(f"  open orders:     {counts['orders_open']:>6}")
     typer.echo(
@@ -300,6 +364,11 @@ def status(
         for pack_id, code, name, stock, shopify_stock in samples["stock_dirty"]:
             typer.echo(f"  [{pack_id}] {code}  {name}  ({shopify_stock} -> {stock})")
 
+    if samples["media_failed"]:
+        typer.echo("\nImages failed:")
+        for media_id, code, name, attempts, error in samples["media_failed"]:
+            typer.echo(f"  [{media_id}] {code}  {name}  ({attempts} attempt(s): {error})")
+
     if samples["customers_new"]:
         typer.echo("\nCustomers to create:")
         for cid, email, member_number in samples["customers_new"]:
@@ -313,12 +382,20 @@ def status(
 
 
 @app.command("pull-orders")
-def pull_orders_cmd():
-    """Mirror open, unfulfilled Shopify orders into azure.orders and refresh locally open ones."""
-    counts = pull_orders()
+def pull_orders_cmd(
+    full: bool = typer.Option(
+        False, "--full",
+        help="Fetch every order Shopify will return, not just open and recently updated ones",
+    ),
+):
+    """Mirror open and recently updated Shopify orders into azure.orders, with line item status."""
+    counts = pull_orders(full=full)
     typer.echo(f"  orders written:        {counts['pulled']:>6}")
+    typer.echo(f"    open in Shopify:     {counts['open_remote']:>6}")
+    typer.echo(f"    changed, not open:   {counts['changed']:>6}")
     typer.echo(f"  line items written:    {counts['line_items']:>6}")
     typer.echo(f"  non-Azure line items:  {counts['unlinked_items']:>6}")
+    typer.echo(f"  refunded orders:       {counts['refunded']:>6}")
     typer.echo(f"  left the open set:     {counts['closed']:>6}")
     typer.echo(f"  open locally:          {counts['open']:>6}")
 
@@ -500,7 +577,8 @@ def purchase_list(
         if counts["supplier_order_id"]:
             typer.echo(
                 f"Recorded supplier order {counts['supplier_order_id']} for {supplier}: "
-                f"{counts['line_items']} line item(s), {counts['units']} unit(s)"
+                f"{counts['line_items']} variant(s), {counts['units']} unit(s), "
+                f"${counts['total_cost']:.2f}"
             )
 
 
