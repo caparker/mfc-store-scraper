@@ -45,13 +45,13 @@ class MediaSyncError(Exception):
 def _fetch_rows(
     database: Database,
     product_id: int | None,
-    packaging_code: str | None,
+    variant_code: str | None,
     limit: int | None,
 ) -> list[dict]:
     base = """
         SELECT
             id
-            , packaging_code
+            , variant_code
             , original_url
             , file_name
             , shopify_media_id
@@ -63,9 +63,9 @@ def _fetch_rows(
         FROM azure.media_sync
     """
     # A targeted run retries failed rows too; the default run leaves them alone.
-    if packaging_code is not None:
-        query = sql.SQL(base + "WHERE sync_state <> 'done' AND packaging_code = %(code)s")
-        return database.fetchall(query, {"code": packaging_code}, rows.dict_row)
+    if variant_code is not None:
+        query = sql.SQL(base + "WHERE sync_state <> 'done' AND variant_code = %(code)s")
+        return database.fetchall(query, {"code": variant_code}, rows.dict_row)
     if product_id is not None:
         query = sql.SQL(base + "WHERE sync_state <> 'done' AND product_id = %(product_id)s")
         return database.fetchall(query, {"product_id": product_id}, rows.dict_row)
@@ -82,7 +82,7 @@ def _product_rows(database: Database, product_id: int) -> list[dict]:
             """
             SELECT
                 id
-                , packaging_code
+                , variant_code
                 , original_url
                 , file_name
                 , shopify_media_id
@@ -210,8 +210,8 @@ def _existing_media_by_url(database: Database, product_id: int) -> dict[str, tup
                 , m.shopify_media_id
                 , m.shopify_status
             FROM azure.media m
-            JOIN azure.packaging pack ON pack.code = m.packaging_code
-            WHERE pack.products_id = %(product_id)s
+            JOIN azure.variants v ON v.id = m.variants_id
+            WHERE v.products_id = %(product_id)s
               AND m.shopify_media_id IS NOT NULL
               AND m.shopify_status IN ('UPLOADED', 'PROCESSING', 'READY')
             ORDER BY m.original_url, (m.shopify_status = 'READY') DESC
@@ -402,7 +402,7 @@ def _sync_product(shopify: Shopify, database: Database, product_rows: list[dict]
 
 def sync_media(
     product_id: int | None = None,
-    packaging_code: str | None = None,
+    variant_code: str | None = None,
     max_workers: int = 3,
     limit: int | None = None,
 ) -> dict[str, int]:
@@ -410,7 +410,7 @@ def sync_media(
     logger.info("Starting Shopify media sync")
 
     database = Database()
-    pending = _fetch_rows(database, product_id, packaging_code, limit)
+    pending = _fetch_rows(database, product_id, variant_code, limit)
     logger.info(f"Found {len(pending)} image(s) to sync")
     totals: dict[str, int] = defaultdict(int)
     if not pending:

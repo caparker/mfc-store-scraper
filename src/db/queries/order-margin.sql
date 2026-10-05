@@ -12,7 +12,7 @@ SELECT o.id
   FROM azure.order_items i
   JOIN azure.orders o ON (o.id = i.orders_id)
   JOIN azure.customers c ON (c.id = o.customers_id)
-  LEFT JOIN azure.current_prices p ON (p.packaging_code = i.packaging_code)
+  LEFT JOIN azure.current_prices p ON (p.variants_id = i.variants_id)
   WHERE i.current_quantity > 0
   --AND o.name = '#2553'
   GROUP BY 1,2,3,4,5
@@ -33,7 +33,7 @@ SELECT o.id
   FROM azure.order_items i
   JOIN azure.orders o ON (o.id = i.orders_id)
   JOIN azure.customers c ON (c.id = o.customers_id)
-  LEFT JOIN azure.current_prices p ON (p.packaging_code = i.packaging_code)
+  LEFT JOIN azure.current_prices p ON (p.variants_id = i.variants_id)
   WHERE i.current_quantity > 0
   GROUP BY 1,2,3,4,5)
   SELECT last_name

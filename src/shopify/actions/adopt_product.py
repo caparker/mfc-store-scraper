@@ -21,8 +21,8 @@ def adopt_product(product: ProductModel) -> ProductModel:
     same Azure product id; otherwise this raises rather than link the wrong
     product.
 
-    Variants are matched to azure.packaging by SKU ("AZ-<code>"), not by their
-    internal.id metafield, because packaging ids are not stable across DB
+    Variants are matched to azure.variants by SKU ("AZ-<code>"), not by their
+    internal.id metafield, because variant ids are not stable across DB
     rebuilds. The variant metafield is refreshed on the next variant push.
 
     The product row is left dirty so the next update pushes the DB state.
@@ -87,7 +87,7 @@ def adopt_product(product: ProductModel) -> ProductModel:
         db.batch_execute(
             sql.SQL(
                 """
-                UPDATE azure.packaging
+                UPDATE azure.variants
                 SET shopify_variant_id = %(shopify_variant_id)s
                 WHERE products_id = %(product_id)s
                   AND code = %(code)s

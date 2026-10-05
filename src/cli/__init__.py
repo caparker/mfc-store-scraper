@@ -90,8 +90,8 @@ def dump_db(
 
 @app.command()
 def sync_variants(
-    packaging_code: str = typer.Option(
-        None, "--packaging-code", help="Only update this azure.packaging.code"
+    variant_code: str = typer.Option(
+        None, "--variant-code", help="Only update this azure.variants.code"
     ),
     product_id: int = typer.Option(
         None, "--product-id", help="Update all variants for this azure.products.id"
@@ -103,9 +103,9 @@ def sync_variants(
         None, "--limit", help="Only process the first N rows"
     ),
 ):
-    """Push dirty azure.packaging rows to Shopify (price, cost, inventory policy). Stock is sync-stock."""
+    """Push dirty azure.variants rows to Shopify (price, cost, inventory policy). Stock is sync-stock."""
     update_variants(
-        packaging_code=packaging_code,
+        variant_code=variant_code,
         product_id=product_id,
         max_workers=max_workers,
         limit=limit,
@@ -114,8 +114,8 @@ def sync_variants(
 
 @app.command()
 def sync_stock(
-    packaging_code: str = typer.Option(
-        None, "--packaging-code", help="Only push this azure.packaging.code"
+    variant_code: str = typer.Option(
+        None, "--variant-code", help="Only push this azure.variants.code"
     ),
     product_id: int = typer.Option(
         None, "--product-id", help="Push all variants for this azure.products.id"
@@ -129,7 +129,7 @@ def sync_stock(
 ):
     """Push changed stock to Shopify in batches of 250 variants."""
     update_stock(
-        packaging_code=packaging_code,
+        variant_code=variant_code,
         product_id=product_id,
         max_workers=max_workers,
         limit=limit,
@@ -137,8 +137,8 @@ def sync_stock(
 
 @app.command("sync-media")
 def sync_media_cmd(
-    packaging_code: str = typer.Option(
-        None, "--packaging-code", help="Only sync the image for this azure.packaging.code"
+    variant_code: str = typer.Option(
+        None, "--variant-code", help="Only sync the image for this azure.variants.code"
     ),
     product_id: int = typer.Option(
         None, "--product-id",
@@ -155,7 +155,7 @@ def sync_media_cmd(
     variant image."""
     counts = sync_media(
         product_id=product_id,
-        packaging_code=packaging_code,
+        variant_code=variant_code,
         max_workers=max_workers,
         limit=limit,
     )
@@ -537,7 +537,7 @@ def purchase_list(
         if not demand:
             typer.echo("Nothing outstanding")
         for d in demand:
-            code = d["packaging_code"] or f"(not Azure: {d['sku'] or '-'})"
+            code = d["variant_code"] or f"(not Azure: {d['sku'] or '-'})"
             typer.echo(
                 f"  {d['order_name']:<8} {code:<24} x{d['outstanding']:<4} "
                 f"{d['title']} {d['variant_title'] or ''}  [{d['financial_status']}]"
@@ -546,8 +546,8 @@ def purchase_list(
         items = get_purchase_list()
         if not items:
             typer.echo("Nothing outstanding")
-        azure_items = [i for i in items if i["packaging_code"]]
-        other_items = [i for i in items if not i["packaging_code"]]
+        azure_items = [i for i in items if i["variant_code"]]
+        other_items = [i for i in items if not i["variant_code"]]
 
         if azure_items:
             typer.echo("Azure Standard:")
@@ -558,7 +558,7 @@ def purchase_list(
                 total += line_total
                 price_text = f"${price:>8.2f}" if price is not None else "        -"
                 typer.echo(
-                    f"  {i['packaging_code']:<12} x{int(i['outstanding']):<4} "
+                    f"  {i['variant_code']:<12} x{int(i['outstanding']):<4} "
                     f"{price_text} {i['product_name']} — {i['size']}  "
                     f"(stock {i['azure_stock']}, {i['order_count']} order(s))"
                 )

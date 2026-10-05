@@ -43,7 +43,7 @@ class OrderItemModel(BaseModel):
     shopify_line_item_id: str
     shopify_variant_id: Optional[str] = None
     sku: Optional[str] = None
-    packaging_code: Optional[str] = None
+    variants_id: Optional[int] = None
     title: Optional[str] = None
     variant_title: Optional[str] = None
     quantity: int

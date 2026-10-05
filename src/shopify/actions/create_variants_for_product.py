@@ -5,7 +5,7 @@ from typing import List
 from psycopg import rows, sql
 
 from src.db.postgres import Database, MARKUP_PERCENTAGE
-from src.db.models.packaging import PackagingModel
+from src.db.models.variant import VariantModel
 from src.db.models.price import PriceModel
 from src.db.models.product import ProductModel
 from src.lib.logger import logger
@@ -29,70 +29,68 @@ class ProductVariantCreateError(Exception):
         super().__init__(self.message)
 
 
-def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
+def create_variants_for_product(product: ProductModel) -> List[VariantModel]:
     """
     Used when a product already exists and we're adding new sizes/variants for the product
     Additionally, used during the product create process to create initial variants
     """
 
     db = Database()
-    product_packaging: List[PackagingModel] = db.fetchall(
-        sql.SQL("""SELECT * FROM azure.packaging WHERE products_id = %(product_id)s"""),
+    product_variants: List[VariantModel] = db.fetchall(
+        sql.SQL("""SELECT * FROM azure.variants WHERE products_id = %(product_id)s"""),
         {"product_id": product.id},
-        rows.class_row(PackagingModel),
+        rows.class_row(VariantModel),
     )
 
-    sorted_packaging: List[PackagingModel] = sorted(
-        product_packaging, key=lambda pack: pack.weight["net"]
+    sorted_variants: List[VariantModel] = sorted(
+        product_variants, key=lambda variant: variant.weight["net"]
     )
 
-    variant_input: List[ProductVariantsBulkInput] = []
+    variant_inputs: List[ProductVariantsBulkInput] = []
 
-    for pack in sorted_packaging:
-        packaging = PackagingModel.model_validate(pack)
-
-        if packaging.shopify_variant_id:
-            logger.debug(f"Variant already exists, skipping [{pack.model_dump_json()}]")
+    for variant in sorted_variants:
+        if variant.shopify_variant_id:
+            logger.debug(f"Variant already exists, skipping [{variant.model_dump_json()}]")
             continue
 
-        packaging_price = PriceModel.model_validate(
+        variant_price = PriceModel.model_validate(
             db.fetchone(
                 sql.SQL(
-                    """SELECT * FROM azure.current_prices WHERE packaging_code = %(packaging_code)s"""
+                    """SELECT * FROM azure.current_prices WHERE variants_id = %(variants_id)s"""
                 ),
-                {"packaging_code": packaging.code},
+                {"variants_id": variant.id},
                 rows.class_row(PriceModel),
             )
         )
 
-        if not packaging_price.retail_dollars:
+        if not variant_price.retail_dollars:
             logger.debug("Variant has no price, skipping...")
             continue
 
         cost = (
-            f"{round(packaging_price.wholesale_dollars, 2):.2f}"
-            if packaging_price.wholesale_dollars
+            f"{round(variant_price.wholesale_dollars, 2):.2f}"
+            if variant_price.wholesale_dollars
             else None
         )
 
-        packaging_input = ProductVariantsBulkInput(
+        variant_input = ProductVariantsBulkInput(
             compareAtPrice=None,
-            inventoryItem=InventoryItemInput(cost=cost, sku=f"AZ-{pack.code}"),
+            inventoryItem=InventoryItemInput(cost=cost, sku=f"AZ-{variant.code}"),
             inventoryPolicy=ProductVariantInventoryPolicy.DENY,
-            optionValues=[VariantOptionValueInput(name=pack.size)],
+            optionValues=[VariantOptionValueInput(name=variant.size)],
             mediaId=None,  # set by sync-media once the variant exists
-            price=f"{round(packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)), 2):.2f}",
-            metafields=[Metafield(value=str(pack.id))],
+            price=f"{round(variant_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)), 2):.2f}",
+            metafields=[Metafield(value=str(variant.id))],
         )
 
         # Remove the ID field before creation
-        del packaging_input.id
+        del variant_input.id
 
-        variant_input.append(packaging_input.model_dump())
+        variant_inputs.append(variant_input.model_dump())
 
-    if not variant_input:
+    if not variant_inputs:
         logger.debug(f"No variants to create for product {product.id}")
-        return sorted_packaging
+        return sorted_variants
 
     shopify = Shopify()
 
@@ -100,7 +98,7 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
         Mutations.product_variants_bulk_create,
         {
             "productId": product.shopify_product_id,
-            "variants": variant_input,
+            "variants": variant_inputs,
             "namespace": "internal",
             "key": "id",
         },
@@ -129,18 +127,18 @@ def create_variants_for_product(product: ProductModel) -> List[PackagingModel]:
     ) in product_variants_bulk_response.data.productVariantsBulkCreate.productVariants:
         db.batch_execute(
             sql.SQL("""
-                UPDATE azure.packaging
+                UPDATE azure.variants
                 SET
                     shopify_variant_id = %(shopify_variant_id)s,
                     shopify_updated_at = now()
-                WHERE id = %(packaging_id)s
+                WHERE id = %(variants_id)s
             """),
             [
                 {
-                    "packaging_id": int(variant.metafield.value),
+                    "variants_id": int(variant.metafield.value),
                     "shopify_variant_id": variant.id,
                 }
             ],
         )
 
-    return sorted_packaging
+    return sorted_variants

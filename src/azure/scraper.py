@@ -167,7 +167,7 @@ class AzureScraper:
     ) -> tuple[List[Dict], List[Dict], List[Dict], List[Dict]]:
         """Format Azure products for insertion into database"""
         products = []
-        packaging = []
+        variants = []
         prices = []
 
         media = []
@@ -198,7 +198,7 @@ class AzureScraper:
                     # tagged goods that we don't need to track anyway.
                     continue
 
-                packaging.append(
+                variants.append(
                     {
                         "products_id": product.get("id"),
                         "code": pack.get("code"),
@@ -221,7 +221,7 @@ class AzureScraper:
                 for position, image_url in enumerate(pack.get("images")):
                     media.append(
                         {
-                            "packaging_code": pack.get("code"),
+                            "code": pack.get("code"),
                             "original_url": image_url,
                             "file_name": re.search(
                                 r"([0-9\-a-z]+)$", image_url
@@ -232,7 +232,7 @@ class AzureScraper:
 
                 prices.append(
                     {
-                        "packaging_code": pack.get("code"),
+                        "code": pack.get("code"),
                         "retail_dollars": pack.get("price")
                         .get("retail", {})
                         .get("dollars"),
@@ -246,4 +246,4 @@ class AzureScraper:
                     }
                 )
 
-        return (products, packaging, prices, media)
+        return (products, variants, prices, media)

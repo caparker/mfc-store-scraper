@@ -10,7 +10,7 @@ class MediaModel(BaseModel):
     """Pydantic model for the `azure.media` table"""
 
     id: int
-    packaging_code: str
+    variants_id: int
     original_url: str
     file_name: str | None = None
     position: int = 0

@@ -4,7 +4,8 @@ SELECT
     , o.name AS order_name
     , o.financial_status
     , o.fulfillment_status
-    , oi.packaging_code
+    , oi.variants_id
+    , v.code AS variant_code
     , oi.sku
     , oi.title
     , oi.variant_title
@@ -14,4 +15,5 @@ SELECT
     , o.ordered_at
 FROM azure.order_items oi
 JOIN azure.orders o ON o.id = oi.orders_id
+LEFT JOIN azure.variants v ON v.id = oi.variants_id
 ORDER BY o.ordered_at DESC, oi.id

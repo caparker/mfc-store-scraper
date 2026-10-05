@@ -19,13 +19,13 @@ def get_products_from_azure(limit: int | None = None):
     logger.debug(f"Retrieved {len(all_products)} products")
 
     logger.info("Formatting products...")
-    (formatted_products, formatted_packaging, formatted_prices, formatted_media) = (
+    (formatted_products, formatted_variants, formatted_prices, formatted_media) = (
         scraper.format_products(all_products)
     )
 
     logger.debug(
         f"Formatted {len(formatted_products)} products, \
-        {len(formatted_packaging)} packaging, {len(formatted_prices)} prices"
+        {len(formatted_variants)} variants, {len(formatted_prices)} prices"
     )
 
     database = Database()
@@ -56,9 +56,9 @@ def get_products_from_azure(limit: int | None = None):
     database.batch_execute(product_query, formatted_products)
     logger.info(f"Inserted {len(formatted_products)} products")
 
-    packaging_query = sql.SQL(
+    variants_query = sql.SQL(
         """
-        INSERT INTO azure.packaging (products_id, code, size, weight, stock, rewards_enabled, freight_handling_required, tags, primary_category,favorites,next_purchase_arrival, last_seen_at)
+        INSERT INTO azure.variants (products_id, code, size, weight, stock, rewards_enabled, freight_handling_required, tags, primary_category,favorites,next_purchase_arrival, last_seen_at)
         VALUES (%(products_id)s,%(code)s,%(size)s,%(weight)s,%(stock)s,%(rewards_enabled)s,%(freight_handling_required)s,%(tags)s,%(primary_category)s,%(favorites)s,%(next_purchase_arrival)s, now())
         ON CONFLICT(code)
         DO UPDATE SET
@@ -75,41 +75,41 @@ def get_products_from_azure(limit: int | None = None):
     """
     )
 
-    logger.info("Inserting packaging...")
-    database.batch_execute(packaging_query, formatted_packaging)
-    logger.info(f"Inserted {len(formatted_packaging)} packaging records")
+    logger.info("Inserting variants...")
+    database.batch_execute(variants_query, formatted_variants)
+    logger.info(f"Inserted {len(formatted_variants)} variant records")
 
     if limit is None:
-        # A full scrape returned every packaging Azure still lists. Anything not
+        # A full scrape returned every variant Azure still lists. Anything not
         # touched by this run is gone from Azure, so it has no stock. All rows in
         # the batch above share one transaction timestamp, so max(last_seen_at)
         # identifies this run. Skipped under --limit, which is a partial scrape.
         zeroed = database.execute(
             sql.SQL(
                 """
-                UPDATE azure.packaging
+                UPDATE azure.variants
                 SET stock = 0
                 WHERE stock <> 0
                   AND last_seen_at IS DISTINCT FROM (
-                    SELECT max(last_seen_at) FROM azure.packaging
+                    SELECT max(last_seen_at) FROM azure.variants
                   )
                 """
             )
         )
-        logger.info(f"Zeroed stock on {zeroed} packaging record(s) no longer listed by Azure")
+        logger.info(f"Zeroed stock on {zeroed} variant(s) no longer listed by Azure")
 
-    # pylint: disable=fixme
-    # TODO: Only insert prices for existing packages
+    # A price row is written only when the variant exists and the price differs
+    # from the latest row already held.
     prices_query = sql.SQL(
         """
-        INSERT INTO azure.prices (packaging_code, retail_dollars, retail_unit, wholesale_dollars, wholesale_unit)
-        SELECT %(packaging_code)s, %(retail_dollars)s, %(retail_unit)s, %(wholesale_dollars)s, %(wholesale_unit)s
-        FROM (SELECT DISTINCT code FROM azure.packaging) p
-        WHERE p.code = %(packaging_code)s
+        INSERT INTO azure.prices (variants_id, retail_dollars, retail_unit, wholesale_dollars, wholesale_unit)
+        SELECT v.id, %(retail_dollars)s, %(retail_unit)s, %(wholesale_dollars)s, %(wholesale_unit)s
+        FROM azure.variants v
+        WHERE v.code = %(code)s
         AND (
             SELECT (retail_dollars, retail_unit, wholesale_dollars, wholesale_unit)
             FROM azure.prices
-            WHERE packaging_code = %(packaging_code)s
+            WHERE variants_id = v.id
             ORDER BY created_at DESC
             LIMIT 1
         ) IS DISTINCT FROM (
@@ -127,9 +127,11 @@ def get_products_from_azure(limit: int | None = None):
 
     media_query = sql.SQL(
         """
-        INSERT INTO azure.media (packaging_code, original_url, file_name, position)
-        VALUES (%(packaging_code)s, %(original_url)s, %(file_name)s, %(position)s)
-        ON CONFLICT (packaging_code, original_url) DO UPDATE SET
+        INSERT INTO azure.media (variants_id, original_url, file_name, position)
+        SELECT v.id, %(original_url)s, %(file_name)s, %(position)s
+        FROM azure.variants v
+        WHERE v.code = %(code)s
+        ON CONFLICT (variants_id, original_url) DO UPDATE SET
             position = EXCLUDED.position;
         """
     )

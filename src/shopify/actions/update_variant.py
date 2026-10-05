@@ -3,7 +3,7 @@
 from psycopg import rows, sql
 
 from src.db.postgres import Database, MARKUP_PERCENTAGE
-from src.db.models.packaging import PackagingModel
+from src.db.models.variant import VariantModel
 from src.db.models.price import PriceModel
 from src.db.models.product import ProductModel
 from src.lib.logger import logger
@@ -21,14 +21,14 @@ class ProductVariantUpdateError(Exception):
     """Generic product variant update error"""
 
 
-def update_variant(packaging: PackagingModel) -> PackagingModel:
+def update_variant(variant: VariantModel) -> VariantModel:
     """
     Used to update variants at any time updates are needed for prices, stock, etc.
     """
 
-    if not packaging.shopify_variant_id:
-        logger.debug(f"No shopify_variant_id set, cannot update [{packaging.id}]")
-        return packaging
+    if not variant.shopify_variant_id:
+        logger.debug(f"No shopify_variant_id set, cannot update [{variant.id}]")
+        return variant
 
     db = Database()
 
@@ -37,30 +37,30 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
             sql.SQL(
                 """SELECT * FROM azure.products WHERE id = %(product_id)s LIMIT 1;"""
             ),
-            {"product_id": packaging.products_id},
+            {"product_id": variant.products_id},
             rows.class_row(ProductModel),
         )
     )
 
     # Get the most recent price set for variant
-    packaging_price = PriceModel.model_validate(
+    variant_price = PriceModel.model_validate(
         db.fetchone(
             sql.SQL(
-                """SELECT * FROM azure.prices WHERE packaging_code = %(packaging_code)s ORDER BY created_at DESC LIMIT 1;"""
+                """SELECT * FROM azure.prices WHERE variants_id = %(variants_id)s ORDER BY created_at DESC LIMIT 1;"""
             ),
-            {"packaging_code": packaging.code},
+            {"variants_id": variant.id},
             rows.class_row(PriceModel),
         )
     )
 
-    packaging_input = ProductVariantsBulkInput(
-        id=packaging.shopify_variant_id,
+    variant_input = ProductVariantsBulkInput(
+        id=variant.shopify_variant_id,
         compareAtPrice=None,
         inventoryPolicy=ProductVariantInventoryPolicy.DENY,
-        optionValues=[VariantOptionValueInput(name=packaging.size)],
+        optionValues=[VariantOptionValueInput(name=variant.size)],
         mediaId=None,  # images are managed by sync-media
-        price=f"{packaging_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)):.2f}",
-        metafields=[Metafield(value=str(packaging.id))],
+        price=f"{variant_price.retail_dollars / (1 - (MARKUP_PERCENTAGE/100)):.2f}",
+        metafields=[Metafield(value=str(variant.id))],
     )
 
     shopify = Shopify()
@@ -69,7 +69,7 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
         Mutations.product_variants_bulk_update,
         {
             "productId": product.shopify_product_id,
-            "variants": [packaging_input.model_dump()],
+            "variants": [variant_input.model_dump()],
             "namespace": "internal",
             "key": "id",
         },
@@ -91,12 +91,12 @@ def update_variant(packaging: PackagingModel) -> PackagingModel:
 
     db.batch_execute(
         sql.SQL("""
-            UPDATE azure.packaging
+            UPDATE azure.variants
             SET
                 shopify_updated_at = now()
-            WHERE id = %(packaging_id)s
+            WHERE id = %(variants_id)s
         """),
-        [{"packaging_id": packaging.id}],
+        [{"variants_id": variant.id}],
     )
 
-    return packaging
+    return variant

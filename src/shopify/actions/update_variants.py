@@ -1,4 +1,4 @@
-"""Action for pushing dirty azure.packaging rows to Shopify as variant updates."""
+"""Action for pushing dirty azure.variants rows to Shopify as variant updates."""
 
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +17,7 @@ class VariantUpdateError(Exception):
 
 
 # Row shape returned by the dirty query.
-# (packaging_id, packaging_code, shopify_variant_id, shopify_product_id, retail_dollars)
+# (variants_id, variant_code, shopify_variant_id, shopify_product_id, retail_dollars)
 DirtyRow = tuple
 
 INVENTORY_POLICY = "DENY"
@@ -25,35 +25,35 @@ INVENTORY_POLICY = "DENY"
 
 def _fetch_dirty_rows(
     database: Database,
-    packaging_code: str | None,
+    variant_code: str | None,
     product_id: int | None,
     limit: int | None = None,
 ) -> List[DirtyRow]:
     base = """
         WITH latest_price AS (
-            SELECT DISTINCT ON (packaging_code)
-                packaging_code, retail_dollars, created_at
+            SELECT DISTINCT ON (variants_id)
+                variants_id, retail_dollars, created_at
             FROM azure.prices
-            ORDER BY packaging_code, created_at DESC
+            ORDER BY variants_id, created_at DESC
         )
         SELECT
-            pack.id,
-            pack.code,
-            pack.shopify_variant_id,
+            v.id,
+            v.code,
+            v.shopify_variant_id,
             prod.shopify_product_id,
             lp.retail_dollars as retail_dollars
-        FROM azure.packaging pack
-        JOIN azure.products prod ON prod.id = pack.products_id
-        LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
-        WHERE pack.shopify_variant_id IS NOT NULL
+        FROM azure.variants v
+        JOIN azure.products prod ON prod.id = v.products_id
+        LEFT JOIN latest_price lp ON lp.variants_id = v.id
+        WHERE v.shopify_variant_id IS NOT NULL
           AND prod.shopify_product_id IS NOT NULL
           AND prod.shopify_status <> 'DELETED'
           AND lp.retail_dollars IS NOT NULL
     """
 
-    if packaging_code is not None:
-        query = sql.SQL(base + " AND pack.code = %(code)s")
-        return database.fetchall(query, {"code": packaging_code})
+    if variant_code is not None:
+        query = sql.SQL(base + " AND v.code = %(code)s")
+        return database.fetchall(query, {"code": variant_code})
 
     if product_id is not None:
         query = sql.SQL(base + " AND prod.id = %(product_id)s")
@@ -63,8 +63,8 @@ def _fetch_dirty_rows(
         base
         + """
           AND (
-            pack.shopify_updated_at IS NULL
-            OR pack.shopify_updated_at < GREATEST(pack.updated_at, lp.created_at)
+            v.shopify_updated_at IS NULL
+            OR v.shopify_updated_at < GREATEST(v.updated_at, lp.created_at)
           ) LIMIT %(limit)s
         """
     )
@@ -93,21 +93,21 @@ def _update_product_variants(
         raise VariantUpdateError(f"{top_errors or user_errors}")
 
 def update_variants(
-    packaging_code: str | None = None,
+    variant_code: str | None = None,
     product_id: int | None = None,
     max_workers: int = 5,
     limit: int | None = None,
 ):
     """Push variant-level updates (price, cost, inventory policy) to Shopify
-    for any dirty packaging rows. Stock is handled separately by update_stock.
+    for any dirty variant rows. Stock is handled separately by update_stock.
 
     Dirty = shopify_variant_id IS NOT NULL AND
-            shopify_updated_at < GREATEST(packaging.updated_at, latest_price.created_at).
+            shopify_updated_at < GREATEST(variants.updated_at, latest_price.created_at).
     """
     logger.info("Starting Shopify variant update")
 
     database = Database()
-    rows = _fetch_dirty_rows(database, packaging_code, product_id, limit)
+    rows = _fetch_dirty_rows(database, variant_code, product_id, limit)
     logger.info(f"Found {len(rows)} variant(s) to update")
     if not rows:
         return
@@ -152,7 +152,7 @@ def update_variants(
                 database.batch_execute(
                     sql.SQL(
                         """
-                        UPDATE azure.packaging
+                        UPDATE azure.variants
                         SET shopify_updated_at = now()
                         WHERE id = %(id)s
                         """

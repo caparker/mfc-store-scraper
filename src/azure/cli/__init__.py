@@ -41,9 +41,9 @@ def quick_order(
     from src.azure.quick_order import run_quick_order  # pylint: disable=import-outside-toplevel
 
     items = [
-        {"code": i["packaging_code"], "quantity": int(i["outstanding"]), "name": i["product_name"]}
+        {"code": i["variant_code"], "quantity": int(i["outstanding"]), "name": i["product_name"]}
         for i in get_purchase_list()
-        if i["packaging_code"]
+        if i["variant_code"]
     ]
     if limit is not None:
         items = items[:limit]
@@ -65,7 +65,7 @@ def quick_order(
             typer.echo(f"  FAILED {f['code']:<12} x{f['quantity']:<4} {f['name']}: {f['detail']}")
         if commit and not dry_run and added:
             counts = commit_supplier_order(
-                supplier="azure", notes=notes, packaging_codes=[a["code"] for a in added]
+                supplier="azure", notes=notes, variant_codes=[a["code"] for a in added]
             )
             typer.echo(
                 f"Recorded supplier order {counts['supplier_order_id']}: "

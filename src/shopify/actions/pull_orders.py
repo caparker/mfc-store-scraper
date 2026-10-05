@@ -34,7 +34,7 @@ def _check_errors(resp: dict) -> None:
         raise ShopifyQueryError(f"{errors}")
 
 
-def _packaging_code(sku: str | None) -> str | None:
+def _variant_code(sku: str | None) -> str | None:
     if sku and sku.startswith(SKU_PREFIX):
         return sku[len(SKU_PREFIX):]
     return None
@@ -169,7 +169,7 @@ def _item_row(order_gid: str, item: dict, refunded: dict[str, int] | None = None
         "gid": item["id"],
         "variant_gid": variant.get("id"),
         "sku": item.get("sku"),
-        "packaging_code": _packaging_code(item.get("sku")),
+        "variant_code": _variant_code(item.get("sku")),
         "title": item.get("title"),
         "variant_title": item.get("variantTitle"),
         "quantity": item.get("quantity") or 0,
@@ -263,7 +263,7 @@ def _write(
                         """
                         INSERT INTO azure.order_items (
                             orders_id, shopify_line_item_id, shopify_variant_id, sku
-                            , packaging_code, title, variant_title
+                            , variants_id, title, variant_title
                             , quantity, current_quantity, unfulfilled_quantity
                             , cancelled_quantity, returned_quantity
                             , original_unit_price, discounted_unit_price, discounted_total
@@ -271,7 +271,7 @@ def _write(
                         VALUES (
                             (SELECT id FROM azure.orders WHERE shopify_order_id = %(order_gid)s)
                             , %(gid)s, %(variant_gid)s, %(sku)s
-                            , (SELECT code FROM azure.packaging WHERE code = %(packaging_code)s)
+                            , (SELECT id FROM azure.variants WHERE code = %(variant_code)s)
                             , %(title)s, %(variant_title)s
                             , %(quantity)s, %(current_quantity)s, %(unfulfilled_quantity)s
                             , %(cancelled_quantity)s, %(returned_quantity)s
@@ -281,7 +281,7 @@ def _write(
                         ON CONFLICT (shopify_line_item_id) DO UPDATE SET
                             shopify_variant_id = EXCLUDED.shopify_variant_id
                             , sku = EXCLUDED.sku
-                            , packaging_code = EXCLUDED.packaging_code
+                            , variants_id = EXCLUDED.variants_id
                             , title = EXCLUDED.title
                             , variant_title = EXCLUDED.variant_title
                             , quantity = EXCLUDED.quantity
@@ -312,8 +312,8 @@ def pull_orders(full: bool = False) -> dict[str, int]:
     """Mirror Shopify orders into the DB.
 
     - Every order Shopify lists as open and unfulfilled is upserted with its
-      line items. Line items whose SKU is `AZ-<code>` are linked to
-      azure.packaging by code.
+      line items. Line items whose SKU is `AZ-<code>` are linked to the
+      azure.variants row with that code.
     - Every order updated in Shopify since the newest remote_updated_at we
       hold is also upserted, open or closed, so later refunds and edits are
       recorded. With full set (or on the first pull) every order in the
@@ -381,7 +381,7 @@ def pull_orders(full: bool = False) -> dict[str, int]:
         orders.append(_order_row(node, pulled_at))
         for item in _complete_line_items(shopify, node):
             row = _item_row(node["id"], item, refunds.get(item["id"]))
-            if row["packaging_code"] is None:
+            if row["variant_code"] is None:
                 unlinked += 1
             items.append(row)
 

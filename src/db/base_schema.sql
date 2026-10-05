@@ -87,7 +87,10 @@ EXECUTE FUNCTION set_updated_at_if_changed(
 );
 
 
-CREATE TABLE IF NOT EXISTS azure.packaging (
+-- One row per purchasable size of a product (a Shopify variant). `code` is the
+-- supplier's code: the scrape upsert key and the suffix of the Shopify SKU.
+-- Other tables link to variants by id.
+CREATE TABLE IF NOT EXISTS azure.variants (
     id SERIAL PRIMARY KEY,
     products_id INTEGER NOT NULL REFERENCES azure.products(id) ON DELETE CASCADE,
     code TEXT,
@@ -114,16 +117,11 @@ CREATE TABLE IF NOT EXISTS azure.packaging (
     UNIQUE(products_id, size)
 );
 
--- Existing databases were created before these columns existed.
-ALTER TABLE azure.packaging
-    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ
-    , ADD COLUMN IF NOT EXISTS shopify_stock INTEGER;
-
 -- Only columns that reach Shopify mark a variant dirty: in practice `size`
 -- (the option value) plus a new price row. stock has its own sync (stock vs
 -- shopify_stock); every other column here is never sent to Shopify.
-CREATE OR REPLACE TRIGGER packaging_set_updated_at
-BEFORE UPDATE ON azure.packaging
+CREATE OR REPLACE TRIGGER variants_set_updated_at
+BEFORE UPDATE ON azure.variants
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at_if_changed(
     'updated_at', 'created_at',
@@ -134,10 +132,12 @@ EXECUTE FUNCTION set_updated_at_if_changed(
     'primary_category', 'rewards_enabled', 'freight_handling_required'
 );
 
+CREATE INDEX IF NOT EXISTS idx_variants_products_id ON azure.variants(products_id);
+
 
 CREATE TABLE IF NOT EXISTS azure.prices (
     id SERIAL PRIMARY KEY,
-    packaging_code TEXT NOT NULL REFERENCES azure.packaging(code) ON DELETE CASCADE,
+    variants_id INTEGER NOT NULL REFERENCES azure.variants(id) ON DELETE CASCADE,
     retail_dollars REAL,
     retail_unit TEXT,
     wholesale_dollars REAL,
@@ -145,11 +145,11 @@ CREATE TABLE IF NOT EXISTS azure.prices (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_prices_packaging_code_created
-  ON azure.prices (packaging_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prices_variants_id_created
+  ON azure.prices (variants_id, created_at DESC);
 
--- One row per (packaging, image url) as listed by Azure, in Azure's order.
--- Only the first image of each packaging (see azure.primary_media) is pushed to
+-- One row per (variant, image url) as listed by Azure, in Azure's order.
+-- Only the first image of each variant (see azure.primary_media) is pushed to
 -- Shopify: it is created on the product and set as the variant image. The
 -- Shopify side is tracked explicitly rather than by updated_at:
 --   shopify_media_id / shopify_status  the media created on the product
@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_prices_packaging_code_created
 --   error / attempts / last_attempt_at what went wrong and how often
 CREATE TABLE IF NOT EXISTS azure.media (
     id SERIAL PRIMARY KEY,
-    packaging_code TEXT NOT NULL REFERENCES azure.packaging(code) ON DELETE CASCADE,
+    variants_id INTEGER NOT NULL REFERENCES azure.variants(id) ON DELETE CASCADE,
     original_url TEXT NOT NULL,
     file_name TEXT NOT NULL,
     position INTEGER NOT NULL DEFAULT 0,
@@ -171,29 +171,16 @@ CREATE TABLE IF NOT EXISTS azure.media (
     shopify_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(packaging_code, original_url)
+    UNIQUE(variants_id, original_url)
 );
 
--- Existing databases were created before these columns existed.
-ALTER TABLE azure.media
-    ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0
-    , ADD COLUMN IF NOT EXISTS shopify_status TEXT
-    , ADD COLUMN IF NOT EXISTS variant_media_set_at TIMESTAMPTZ
-    , ADD COLUMN IF NOT EXISTS error TEXT
-    , ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0
-    , ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_media_variants_id ON azure.media(variants_id);
 
--- An earlier version attached this trigger to azure.packaging by mistake.
-DROP TRIGGER IF EXISTS media_set_updated_at ON azure.packaging;
-
-CREATE INDEX IF NOT EXISTS idx_packaging_products_id ON azure.packaging(products_id);
-CREATE INDEX IF NOT EXISTS idx_media_packaging_code ON azure.media(packaging_code);
-
--- The image pushed to Shopify for each packaging: first in Azure's order.
+-- The image pushed to Shopify for each variant: first in Azure's order.
 CREATE OR REPLACE VIEW azure.primary_media AS
-SELECT DISTINCT ON (packaging_code) *
+SELECT DISTINCT ON (variants_id) *
 FROM azure.media
-ORDER BY packaging_code, position, id;
+ORDER BY variants_id, position, id;
 
 -- Primary media for variants that exist in Shopify, with a sync state:
 --   done     variant points at the media
@@ -202,8 +189,8 @@ ORDER BY packaging_code, position, id;
 CREATE OR REPLACE VIEW azure.media_sync AS
 SELECT
     m.*
-    , pack.id AS packaging_id
-    , pack.shopify_variant_id
+    , v.code AS variant_code
+    , v.shopify_variant_id
     , prod.id AS product_id
     , prod.shopify_product_id
     , prod.name AS product_name
@@ -213,42 +200,43 @@ SELECT
         ELSE 'pending'
       END AS sync_state
 FROM azure.primary_media m
-JOIN azure.packaging pack ON pack.code = m.packaging_code
-JOIN azure.products prod ON prod.id = pack.products_id
-WHERE pack.shopify_variant_id IS NOT NULL
+JOIN azure.variants v ON v.id = m.variants_id
+JOIN azure.products prod ON prod.id = v.products_id
+WHERE v.shopify_variant_id IS NOT NULL
   AND prod.shopify_product_id IS NOT NULL
   AND prod.shopify_status <> 'DELETED';
 
 CREATE OR REPLACE VIEW azure.current_prices AS
-SELECT DISTINCT ON (packaging_code) *
+SELECT DISTINCT ON (variants_id) *
 FROM azure.prices
-ORDER BY packaging_code, created_at DESC;
+ORDER BY variants_id, created_at DESC;
 
 
 CREATE OR REPLACE VIEW azure.price_total_change AS
 SELECT
-    pk.products_id,
-    pk.code AS packaging_code,
-    first_price.retail_dollars AS first_retail_dollars,
-    last_price.retail_dollars AS current_retail_dollars,
-    (last_price.retail_dollars - first_price.retail_dollars) AS retail_change,
-    first_price.wholesale_dollars AS first_wholesale_dollars,
-    last_price.wholesale_dollars AS current_wholesale_dollars,
-    (last_price.wholesale_dollars - first_price.wholesale_dollars) AS wholesale_change,
-    first_price.created_at AS first_recorded_at,
-    last_price.created_at AS last_recorded_at
-FROM azure.packaging pk
+    v.products_id
+    , v.id AS variants_id
+    , v.code AS variant_code
+    , first_price.retail_dollars AS first_retail_dollars
+    , last_price.retail_dollars AS current_retail_dollars
+    , (last_price.retail_dollars - first_price.retail_dollars) AS retail_change
+    , first_price.wholesale_dollars AS first_wholesale_dollars
+    , last_price.wholesale_dollars AS current_wholesale_dollars
+    , (last_price.wholesale_dollars - first_price.wholesale_dollars) AS wholesale_change
+    , first_price.created_at AS first_recorded_at
+    , last_price.created_at AS last_recorded_at
+FROM azure.variants v
 JOIN LATERAL (
     SELECT retail_dollars, wholesale_dollars, created_at
     FROM azure.prices
-    WHERE packaging_code = pk.code
+    WHERE variants_id = v.id
     ORDER BY created_at ASC
     LIMIT 1
 ) first_price ON TRUE
 JOIN LATERAL (
     SELECT retail_dollars, wholesale_dollars, created_at
     FROM azure.prices
-    WHERE packaging_code = pk.code
+    WHERE variants_id = v.id
     ORDER BY created_at DESC
     LIMIT 1
 ) last_price ON TRUE;
@@ -257,33 +245,34 @@ JOIN LATERAL (
 CREATE OR REPLACE VIEW azure.price_latest_change AS
 WITH ranked AS (
     SELECT
-        packaging_code,
-        retail_dollars,
-        wholesale_dollars,
-        created_at,
-        ROW_NUMBER() OVER (PARTITION BY packaging_code ORDER BY created_at DESC) AS rn
+        variants_id
+        , retail_dollars
+        , wholesale_dollars
+        , created_at
+        , ROW_NUMBER() OVER (PARTITION BY variants_id ORDER BY created_at DESC) AS rn
     FROM azure.prices
 )
 SELECT
-    pk.products_id,
-    p.shopify_product_id,
-    pk.shopify_variant_id,
-    curr.packaging_code,
-    prev.retail_dollars AS previous_retail_dollars,
-    curr.retail_dollars AS current_retail_dollars,
-    (curr.retail_dollars - prev.retail_dollars) AS retail_change,
-    prev.wholesale_dollars AS previous_wholesale_dollars,
-    curr.wholesale_dollars AS current_wholesale_dollars,
-    (curr.wholesale_dollars - prev.wholesale_dollars) AS wholesale_change,
-    curr.created_at AS changed_at,
-    (prev.created_at - curr.created_at) AS age
+    v.products_id
+    , p.shopify_product_id
+    , v.shopify_variant_id
+    , curr.variants_id
+    , v.code AS variant_code
+    , prev.retail_dollars AS previous_retail_dollars
+    , curr.retail_dollars AS current_retail_dollars
+    , (curr.retail_dollars - prev.retail_dollars) AS retail_change
+    , prev.wholesale_dollars AS previous_wholesale_dollars
+    , curr.wholesale_dollars AS current_wholesale_dollars
+    , (curr.wholesale_dollars - prev.wholesale_dollars) AS wholesale_change
+    , curr.created_at AS changed_at
+    , (prev.created_at - curr.created_at) AS age
 FROM ranked curr
-JOIN azure.packaging pk ON pk.code = curr.packaging_code
-JOIN azure.products p ON (pk.products_id = p.id)
+JOIN azure.variants v ON v.id = curr.variants_id
+JOIN azure.products p ON p.id = v.products_id
 LEFT JOIN ranked prev
-    ON prev.packaging_code = curr.packaging_code AND prev.rn = 2
+    ON prev.variants_id = curr.variants_id AND prev.rn = 2
 WHERE curr.rn = 1
-    AND prev.retail_dollars IS NOT NULL;;
+    AND prev.retail_dollars IS NOT NULL;
 
 CREATE OR REPLACE VIEW dirty_products AS
 SELECT
@@ -309,56 +298,56 @@ ORDER BY created_at DESC;
 
 CREATE OR REPLACE VIEW dirty_variants AS
 WITH latest_price AS (
-    SELECT DISTINCT ON (packaging_code)
-        packaging_code, retail_dollars, created_at
+    SELECT DISTINCT ON (variants_id)
+        variants_id, retail_dollars, created_at
     FROM azure.prices
-    ORDER BY packaging_code, created_at DESC
+    ORDER BY variants_id, created_at DESC
 )
 SELECT
-    prod.id                 AS products_id,
-    prod.shopify_product_id,
-    pack.id                 AS packaging_id,
-    pack.code               AS packaging_code,
-    pack.stock,
-    pack.shopify_variant_id,
-    lp.retail_dollars       AS latest_price,
-    lp.created_at           AS latest_price_at,
-    pack.updated_at         AS packaging_updated_at,
-    pack.shopify_updated_at,
-    pack.last_changed_fields
-FROM azure.packaging pack
-JOIN azure.products prod ON prod.id = pack.products_id
-LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
-WHERE pack.shopify_variant_id IS NOT NULL
+    prod.id                 AS products_id
+    , prod.shopify_product_id
+    , v.id                  AS variants_id
+    , v.code                AS variant_code
+    , v.stock
+    , v.shopify_variant_id
+    , lp.retail_dollars     AS latest_price
+    , lp.created_at         AS latest_price_at
+    , v.updated_at          AS variant_updated_at
+    , v.shopify_updated_at
+    , v.last_changed_fields
+FROM azure.variants v
+JOIN azure.products prod ON prod.id = v.products_id
+LEFT JOIN latest_price lp ON lp.variants_id = v.id
+WHERE v.shopify_variant_id IS NOT NULL
   AND prod.shopify_product_id IS NOT NULL
   AND lp.retail_dollars IS NOT NULL
   AND (
-    pack.shopify_updated_at IS NULL
-    OR pack.shopify_updated_at < GREATEST(pack.updated_at, lp.created_at)
+    v.shopify_updated_at IS NULL
+    OR v.shopify_updated_at < GREATEST(v.updated_at, lp.created_at)
   )
-ORDER BY GREATEST(pack.updated_at, lp.created_at) DESC;
+ORDER BY GREATEST(v.updated_at, lp.created_at) DESC;
 
 
 CREATE OR REPLACE VIEW azure.product_search AS
 SELECT
-    p.id AS products_id,
-    p.shopify_product_id,
-    p.name AS product_name,
-    p.slug,
-    p.category,
-    pk.id AS packaging_id,
-    pk.code AS packaging_code,
-    pk.shopify_variant_id,
-    pk.size,
-    pk.stock,
-    cp.retail_dollars,
-    cp.retail_unit,
-    cp.wholesale_dollars,
-    cp.wholesale_unit,
-    cp.created_at AS price_recorded_at
+    p.id AS products_id
+    , p.shopify_product_id
+    , p.name AS product_name
+    , p.slug
+    , p.category
+    , v.id AS variants_id
+    , v.code AS variant_code
+    , v.shopify_variant_id
+    , v.size
+    , v.stock
+    , cp.retail_dollars
+    , cp.retail_unit
+    , cp.wholesale_dollars
+    , cp.wholesale_unit
+    , cp.created_at AS price_recorded_at
 FROM azure.products p
-JOIN azure.packaging pk ON pk.products_id = p.id
-LEFT JOIN azure.current_prices cp ON cp.packaging_code = pk.code;
+JOIN azure.variants v ON v.products_id = p.id
+LEFT JOIN azure.current_prices cp ON cp.variants_id = v.id;
 
 
 -- CUSTOMERS AND ORDERS
@@ -458,8 +447,8 @@ CREATE TABLE IF NOT EXISTS azure.order_items (
     shopify_line_item_id TEXT UNIQUE NOT NULL,
     shopify_variant_id TEXT,
     sku TEXT,
-    -- Derived from an `AZ-<code>` SKU; NULL for anything that is not an Azure product.
-    packaging_code TEXT REFERENCES azure.packaging(code) ON DELETE SET NULL,
+    -- Resolved from an `AZ-<code>` SKU; NULL for anything that is not an Azure product.
+    variants_id INTEGER REFERENCES azure.variants(id) ON DELETE SET NULL,
     title TEXT,
     variant_title TEXT,
     -- quantity is what was ordered; current_quantity is what remains after
@@ -513,7 +502,7 @@ EXECUTE FUNCTION trigger_set_timestamp();
 
 CREATE INDEX IF NOT EXISTS idx_orders_customers_id ON azure.orders(customers_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_orders_id ON azure.order_items(orders_id);
-CREATE INDEX IF NOT EXISTS idx_order_items_packaging_code ON azure.order_items(packaging_code);
+CREATE INDEX IF NOT EXISTS idx_order_items_variants_id ON azure.order_items(variants_id);
 
 -- A supplier order is a snapshot of demand that was actually purchased from a
 -- supplier. Recording it lets the purchase list show only net new demand.
@@ -525,33 +514,14 @@ CREATE TABLE IF NOT EXISTS azure.supplier_orders (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- The first version of supplier_order_items was one row per customer line
--- item with no price. Drop it (and the views that depend on it) so the
--- per-variant table below can be created; the data it held was never used.
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'azure'
-          AND table_name = 'supplier_order_items'
-          AND column_name = 'order_items_id'
-    ) THEN
-        DROP VIEW IF EXISTS azure.purchase_list;
-        DROP VIEW IF EXISTS azure.purchase_demand;
-        DROP TABLE azure.supplier_order_items;
-    END IF;
-END
-$$;
-
--- One row per variant purchased. unit_price is what was paid per packaging
--- item; it defaults to the Azure retail price current when the order was
--- committed and can be corrected from the invoice. Non-Azure items have no
--- packaging_code and are identified by sku.
+-- One row per variant purchased. unit_price is what was paid per unit; it
+-- defaults to the Azure retail price current when the order was committed and
+-- can be corrected from the invoice. Non-Azure items have no variants_id and
+-- are identified by sku.
 CREATE TABLE IF NOT EXISTS azure.supplier_order_items (
     id SERIAL PRIMARY KEY,
     supplier_orders_id INTEGER NOT NULL REFERENCES azure.supplier_orders(id) ON DELETE CASCADE,
-    packaging_code TEXT REFERENCES azure.packaging(code) ON DELETE SET NULL,
+    variants_id INTEGER REFERENCES azure.variants(id) ON DELETE SET NULL,
     sku TEXT,
     quantity INTEGER NOT NULL,
     unit_price NUMERIC(12, 2)
@@ -559,8 +529,8 @@ CREATE TABLE IF NOT EXISTS azure.supplier_order_items (
 
 CREATE INDEX IF NOT EXISTS idx_supplier_order_items_supplier_orders_id
   ON azure.supplier_order_items(supplier_orders_id);
-CREATE INDEX IF NOT EXISTS idx_supplier_order_items_packaging_code
-  ON azure.supplier_order_items(packaging_code);
+CREATE INDEX IF NOT EXISTS idx_supplier_order_items_variants_id
+  ON azure.supplier_order_items(variants_id);
 
 -- Which customer line items a supplier order item covers, and how many units
 -- of each. A line item can be split across supplier orders when the first
@@ -594,7 +564,8 @@ SELECT
     , o.name AS order_name
     , o.ordered_at
     , o.financial_status
-    , oi.packaging_code
+    , oi.variants_id
+    , v.code AS variant_code
     , oi.sku
     , oi.title
     , oi.variant_title
@@ -603,6 +574,7 @@ SELECT
     , GREATEST(oi.unfulfilled_quantity - COALESCE(soa.ordered, 0), 0) AS outstanding
 FROM azure.order_items oi
 JOIN azure.open_orders o ON o.id = oi.orders_id
+LEFT JOIN azure.variants v ON v.id = oi.variants_id
 LEFT JOIN LATERAL (
     SELECT sum(quantity) AS ordered
     FROM azure.supplier_order_allocations
@@ -610,19 +582,18 @@ LEFT JOIN LATERAL (
 ) soa ON TRUE
 WHERE oi.unfulfilled_quantity > 0;
 
--- Per packaging code: what to buy from Azure. Items without a packaging code
--- (non-Azure products) are grouped by SKU and title instead. retail_dollars is
--- the price recorded on the supplier order when demand is committed.
--- Dropped first: CREATE OR REPLACE cannot add a column mid-view.
-DROP VIEW IF EXISTS azure.purchase_list;
-CREATE VIEW azure.purchase_list AS
+-- Per variant: what to buy from Azure. Items without a variant (non-Azure
+-- products) are grouped by SKU and title instead. retail_dollars is the price
+-- recorded on the supplier order when demand is committed.
+CREATE OR REPLACE VIEW azure.purchase_list AS
 SELECT
-    pd.packaging_code
+    pd.variants_id
+    , pd.variant_code
     , pd.sku
     , COALESCE(p.name, pd.title) AS product_name
-    , COALESCE(pk.size, pd.variant_title) AS size
+    , COALESCE(v.size, pd.variant_title) AS size
     , p.id AS products_id
-    , pk.stock AS azure_stock
+    , v.stock AS azure_stock
     , cp.retail_dollars
     , cp.wholesale_dollars
     , cp.wholesale_unit
@@ -630,14 +601,14 @@ SELECT
     , count(DISTINCT pd.orders_id) AS order_count
     , min(pd.ordered_at) AS oldest_order_at
 FROM azure.purchase_demand pd
-LEFT JOIN azure.packaging pk ON pk.code = pd.packaging_code
-LEFT JOIN azure.products p ON p.id = pk.products_id
-LEFT JOIN azure.current_prices cp ON cp.packaging_code = pd.packaging_code
+LEFT JOIN azure.variants v ON v.id = pd.variants_id
+LEFT JOIN azure.products p ON p.id = v.products_id
+LEFT JOIN azure.current_prices cp ON cp.variants_id = pd.variants_id
 WHERE pd.outstanding > 0
 GROUP BY
-    pd.packaging_code, pd.sku, p.name, pd.title, pk.size, pd.variant_title
-    , p.id, pk.stock, cp.retail_dollars, cp.wholesale_dollars, cp.wholesale_unit
-ORDER BY pd.packaging_code IS NULL, product_name, size;
+    pd.variants_id, pd.variant_code, pd.sku, p.name, pd.title, v.size, pd.variant_title
+    , p.id, v.stock, cp.retail_dollars, cp.wholesale_dollars, cp.wholesale_unit
+ORDER BY pd.variants_id IS NULL, product_name, size;
 
 -- Per customer line item: units bought from a supplier and what they cost,
 -- taken from the supplier order items that cover it. Lines never purchased
@@ -662,16 +633,15 @@ GROUP BY soa.order_items_id;
 -- wholesale and retail prices current at query time (not the price on the
 -- purchase date). Uses current_quantity, so removed and returned units do not
 -- count as sold.
--- Dropped first: CREATE OR REPLACE cannot change a view column's type.
-DROP VIEW IF EXISTS azure.order_item_margin;
-CREATE VIEW azure.order_item_margin AS
+CREATE OR REPLACE VIEW azure.order_item_margin AS
 SELECT
     o.id AS orders_id
     , o.name AS order_name
     , o.ordered_at
     , o.fulfillment_status
     , oi.id AS order_items_id
-    , oi.packaging_code
+    , oi.variants_id
+    , v.code AS variant_code
     , oi.sku
     , oi.title
     , oi.variant_title
@@ -695,6 +665,7 @@ SELECT
       END AS margin_percent
 FROM azure.order_items oi
 JOIN azure.orders o ON o.id = oi.orders_id
+LEFT JOIN azure.variants v ON v.id = oi.variants_id
 CROSS JOIN LATERAL (
     SELECT COALESCE(oi.current_quantity, oi.quantity) AS current_quantity
 ) q
@@ -706,12 +677,9 @@ LEFT JOIN LATERAL (
       , retail_unit
       , retail_dollars::numeric(12, 2) AS retail
     FROM azure.current_prices
-    WHERE packaging_code = oi.packaging_code
+    WHERE variants_id = oi.variants_id
 ) cp ON TRUE
 WHERE o.cancelled_at IS NULL;
-
-
-
 
 
 CREATE OR REPLACE VIEW dirty_customers AS
@@ -737,3 +705,8 @@ SELECT
 FROM azure.customers
 WHERE shopify_customer_id IS NULL
 ORDER BY created_at DESC;
+
+-- A fresh install already has the shape every migration produces.
+INSERT INTO public.patch_history (filename)
+VALUES ('001_variants.sql')
+ON CONFLICT (filename) DO NOTHING;

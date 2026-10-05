@@ -10,10 +10,10 @@ def sync_status() -> dict[str, int]:
 
     counts_query = sql.SQL("""
         WITH latest_price AS (
-            SELECT DISTINCT ON (packaging_code)
-                packaging_code, created_at
+            SELECT DISTINCT ON (variants_id)
+                variants_id, created_at
             FROM azure.prices
-            ORDER BY packaging_code, created_at DESC
+            ORDER BY variants_id, created_at DESC
         )
         SELECT
             (SELECT count(*) FROM azure.products
@@ -28,31 +28,31 @@ def sync_status() -> dict[str, int]:
             (SELECT count(*) FROM azure.products
                 WHERE shopify_status = 'DELETED') AS products_deleted,
 
-            (SELECT count(*) FROM azure.packaging pack
-                JOIN azure.products prod ON prod.id = pack.products_id
+            (SELECT count(*) FROM azure.variants v
+                JOIN azure.products prod ON prod.id = v.products_id
                 WHERE prod.shopify_product_id IS NOT NULL
-                  AND pack.shopify_variant_id IS NULL) AS variants_new,
+                  AND v.shopify_variant_id IS NULL) AS variants_new,
 
-            (SELECT count(*) FROM azure.packaging pack
-                JOIN azure.products prod ON prod.id = pack.products_id
-                LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
-                WHERE pack.shopify_variant_id IS NOT NULL
+            (SELECT count(*) FROM azure.variants v
+                JOIN azure.products prod ON prod.id = v.products_id
+                LEFT JOIN latest_price lp ON lp.variants_id = v.id
+                WHERE v.shopify_variant_id IS NOT NULL
                   AND prod.shopify_product_id IS NOT NULL
                   AND prod.shopify_status <> 'DELETED'
                   AND (
-                    pack.shopify_updated_at IS NULL
-                    OR pack.shopify_updated_at < GREATEST(
-                         pack.updated_at,
+                    v.shopify_updated_at IS NULL
+                    OR v.shopify_updated_at < GREATEST(
+                         v.updated_at,
                          COALESCE(lp.created_at, 'epoch'::timestamptz)
                        )
                   )) AS variants_dirty,
 
-            (SELECT count(*) FROM azure.packaging pack
-                JOIN azure.products prod ON prod.id = pack.products_id
-                WHERE pack.shopify_variant_id IS NOT NULL
+            (SELECT count(*) FROM azure.variants v
+                JOIN azure.products prod ON prod.id = v.products_id
+                WHERE v.shopify_variant_id IS NOT NULL
                   AND prod.shopify_product_id IS NOT NULL
                   AND prod.shopify_status <> 'DELETED'
-                  AND pack.stock IS DISTINCT FROM pack.shopify_stock) AS stock_dirty,
+                  AND v.stock IS DISTINCT FROM v.shopify_stock) AS stock_dirty,
 
             (SELECT count(*) FROM azure.media_sync
                 WHERE sync_state = 'pending') AS media_pending,
@@ -124,12 +124,12 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
 
     variants_new = db.fetchall(
         sql.SQL("""
-            SELECT pack.id, pack.code, prod.name
-            FROM azure.packaging pack
-            JOIN azure.products prod ON prod.id = pack.products_id
+            SELECT v.id, v.code, prod.name
+            FROM azure.variants v
+            JOIN azure.products prod ON prod.id = v.products_id
             WHERE prod.shopify_product_id IS NOT NULL
-              AND pack.shopify_variant_id IS NULL
-            ORDER BY prod.id, pack.code
+              AND v.shopify_variant_id IS NULL
+            ORDER BY prod.id, v.code
             LIMIT %(limit)s
         """),
         {"limit": limit},
@@ -138,26 +138,26 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
     variants_dirty = db.fetchall(
         sql.SQL("""
             WITH latest_price AS (
-                SELECT DISTINCT ON (packaging_code)
-                    packaging_code, created_at
+                SELECT DISTINCT ON (variants_id)
+                    variants_id, created_at
                 FROM azure.prices
-                ORDER BY packaging_code, created_at DESC
+                ORDER BY variants_id, created_at DESC
             )
-            SELECT pack.id, pack.code, prod.name, pack.last_changed_fields
-            FROM azure.packaging pack
-            JOIN azure.products prod ON prod.id = pack.products_id
-            LEFT JOIN latest_price lp ON lp.packaging_code = pack.code
-            WHERE pack.shopify_variant_id IS NOT NULL
+            SELECT v.id, v.code, prod.name, v.last_changed_fields
+            FROM azure.variants v
+            JOIN azure.products prod ON prod.id = v.products_id
+            LEFT JOIN latest_price lp ON lp.variants_id = v.id
+            WHERE v.shopify_variant_id IS NOT NULL
               AND prod.shopify_product_id IS NOT NULL
               AND prod.shopify_status <> 'DELETED'
               AND (
-                pack.shopify_updated_at IS NULL
-                OR pack.shopify_updated_at < GREATEST(
-                     pack.updated_at,
+                v.shopify_updated_at IS NULL
+                OR v.shopify_updated_at < GREATEST(
+                     v.updated_at,
                      COALESCE(lp.created_at, 'epoch'::timestamptz)
                    )
               )
-            ORDER BY GREATEST(pack.updated_at, COALESCE(lp.created_at, 'epoch'::timestamptz)) DESC
+            ORDER BY GREATEST(v.updated_at, COALESCE(lp.created_at, 'epoch'::timestamptz)) DESC
             LIMIT %(limit)s
         """),
         {"limit": limit},
@@ -165,14 +165,14 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
 
     stock_dirty = db.fetchall(
         sql.SQL("""
-            SELECT pack.id, pack.code, prod.name, pack.stock, pack.shopify_stock
-            FROM azure.packaging pack
-            JOIN azure.products prod ON prod.id = pack.products_id
-            WHERE pack.shopify_variant_id IS NOT NULL
+            SELECT v.id, v.code, prod.name, v.stock, v.shopify_stock
+            FROM azure.variants v
+            JOIN azure.products prod ON prod.id = v.products_id
+            WHERE v.shopify_variant_id IS NOT NULL
               AND prod.shopify_product_id IS NOT NULL
               AND prod.shopify_status <> 'DELETED'
-              AND pack.stock IS DISTINCT FROM pack.shopify_stock
-            ORDER BY prod.id, pack.code
+              AND v.stock IS DISTINCT FROM v.shopify_stock
+            ORDER BY prod.id, v.code
             LIMIT %(limit)s
         """),
         {"limit": limit},
@@ -180,7 +180,7 @@ def sync_samples(limit: int = 10) -> dict[str, list[tuple]]:
 
     media_failed = db.fetchall(
         sql.SQL("""
-            SELECT id, packaging_code, product_name, attempts, error
+            SELECT id, variant_code, product_name, attempts, error
             FROM azure.media_sync
             WHERE sync_state = 'failed'
             ORDER BY last_attempt_at DESC NULLS LAST

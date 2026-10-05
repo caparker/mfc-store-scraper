@@ -19,31 +19,31 @@ class StockUpdateError(Exception):
 BATCH_SIZE = 250
 
 # Row shape returned by the dirty query.
-# (packaging_id, shopify_variant_id, shopify_inventory_item_id, stock)
+# (variants_id, shopify_variant_id, shopify_inventory_item_id, stock)
 StockRow = tuple
 
 
 def _fetch_dirty_stock(
     database: Database,
-    packaging_code: str | None,
+    variant_code: str | None,
     product_id: int | None,
     limit: int | None,
 ) -> list[StockRow]:
     base = """
         SELECT
-            pack.id
-            , pack.shopify_variant_id
-            , pack.shopify_inventory_item_id
-            , pack.stock
-        FROM azure.packaging pack
-        JOIN azure.products prod ON prod.id = pack.products_id
-        WHERE pack.shopify_variant_id IS NOT NULL
+            v.id
+            , v.shopify_variant_id
+            , v.shopify_inventory_item_id
+            , v.stock
+        FROM azure.variants v
+        JOIN azure.products prod ON prod.id = v.products_id
+        WHERE v.shopify_variant_id IS NOT NULL
           AND prod.shopify_product_id IS NOT NULL
           AND prod.shopify_status <> 'DELETED'
     """
 
-    if packaging_code is not None:
-        return database.fetchall(sql.SQL(base + " AND pack.code = %(code)s"), {"code": packaging_code})
+    if variant_code is not None:
+        return database.fetchall(sql.SQL(base + " AND v.code = %(code)s"), {"code": variant_code})
 
     if product_id is not None:
         return database.fetchall(sql.SQL(base + " AND prod.id = %(product_id)s"), {"product_id": product_id})
@@ -51,7 +51,7 @@ def _fetch_dirty_stock(
     query = sql.SQL(
         base
         + """
-          AND pack.stock IS DISTINCT FROM pack.shopify_stock
+          AND v.stock IS DISTINCT FROM v.shopify_stock
         LIMIT %(limit)s
         """
     )
@@ -69,7 +69,7 @@ def resolve_inventory_item_ids(
     variant_ids: list[str],
 ) -> dict[str, str]:
     """Return {shopify_variant_id: shopify_inventory_item_id} for the given
-    variants, populating azure.packaging for any that were missing it."""
+    variants, populating azure.variants for any that were missing it."""
     found: dict[str, str] = {}
     updates = []
 
@@ -86,7 +86,7 @@ def resolve_inventory_item_ids(
         database.batch_execute(
             sql.SQL(
                 """
-                UPDATE azure.packaging
+                UPDATE azure.variants
                 SET shopify_inventory_item_id = %(item_id)s
                 WHERE shopify_variant_id = %(variant_id)s
                 """
@@ -123,12 +123,12 @@ def set_on_hand(shopify: Shopify, location_id: str, entries: list[dict]) -> None
 
 
 def update_stock(
-    packaging_code: str | None = None,
+    variant_code: str | None = None,
     product_id: int | None = None,
     max_workers: int = 3,
     limit: int | None = None,
 ):
-    """Push on-hand stock to Shopify for packaging whose stock changed.
+    """Push on-hand stock to Shopify for variants whose stock changed.
 
     Dirty = stock IS DISTINCT FROM shopify_stock. Rows are sent in batches of
     250 regardless of product, and shopify_stock is set to the pushed value on
@@ -137,7 +137,7 @@ def update_stock(
     logger.info("Starting Shopify stock update")
 
     database = Database()
-    rows = _fetch_dirty_stock(database, packaging_code, product_id, limit)
+    rows = _fetch_dirty_stock(database, variant_code, product_id, limit)
     logger.info(f"Found {len(rows)} variant(s) with stock to push")
     if not rows:
         return
@@ -153,7 +153,7 @@ def update_stock(
 
     unresolved = [r for r in rows if r[1] not in item_ids]
     for r in unresolved:
-        logger.warning(f"No inventory item for variant {r[1]} (packaging {r[0]}); skipping")
+        logger.warning(f"No inventory item for variant {r[1]} (variants.id {r[0]}); skipping")
     rows = [r for r in rows if r[1] in item_ids]
 
     batches = [rows[i:i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
@@ -179,7 +179,7 @@ def update_stock(
                 database.batch_execute(
                     sql.SQL(
                         """
-                        UPDATE azure.packaging
+                        UPDATE azure.variants
                         SET shopify_stock = %(stock)s
                         WHERE id = %(id)s
                         """

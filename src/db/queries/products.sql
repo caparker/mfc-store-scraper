@@ -7,11 +7,11 @@ SELECT
     , p.shopify_product_id
     , p.shopify_status
     , p.last_changed_fields
-    , count(pk.id) AS variants
+    , count(v.id) AS variants
     , p.shopify_updated_at
     , p.updated_at
     , p.created_at
 FROM azure.products p
-LEFT JOIN azure.packaging pk ON pk.products_id = p.id
+LEFT JOIN azure.variants v ON v.products_id = p.id
 GROUP BY p.id
 ORDER BY p.id

@@ -48,13 +48,13 @@ def _fetch_rows(database: Database, product_id: int | None, limit: int | None) -
                 , m.shopify_status
                 , m.variant_media_set_at
                 , (m.id = pm.id) AS is_primary
-                , pack.shopify_variant_id
+                , v.shopify_variant_id
                 , prod.id AS product_id
                 , prod.shopify_product_id
             FROM azure.media m
-            JOIN azure.packaging pack ON pack.code = m.packaging_code
-            JOIN azure.products prod ON prod.id = pack.products_id
-            JOIN azure.primary_media pm ON pm.packaging_code = m.packaging_code
+            JOIN azure.variants v ON v.id = m.variants_id
+            JOIN azure.products prod ON prod.id = v.products_id
+            JOIN azure.primary_media pm ON pm.variants_id = m.variants_id
             WHERE prod.id = ANY(%(ids)s)
             ORDER BY prod.id, m.id
             """

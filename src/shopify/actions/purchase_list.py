@@ -9,7 +9,7 @@ AZURE = "azure"
 
 
 def get_purchase_list(database: Database | None = None) -> list[dict]:
-    """Outstanding demand per packaging code (Azure items first, then unlinked)."""
+    """Outstanding demand per variant (Azure items first, then unlinked)."""
     database = database or Database()
     return database.fetchall(
         sql.SQL("SELECT * FROM azure.purchase_list"), {}, row_factory=rows.dict_row
@@ -25,7 +25,7 @@ def get_purchase_demand(database: Database | None = None) -> list[dict]:
             SELECT *
             FROM azure.purchase_demand
             WHERE outstanding > 0
-            ORDER BY packaging_code IS NULL, packaging_code, ordered_at
+            ORDER BY variants_id IS NULL, variant_code, ordered_at
             """
         ),
         {},
@@ -37,34 +37,34 @@ def commit_supplier_order(
     supplier: str = AZURE,
     notes: str | None = None,
     database: Database | None = None,
-    packaging_codes: list[str] | None = None,
+    variant_codes: list[str] | None = None,
 ) -> dict[str, int]:
     """Record the current outstanding demand as a placed supplier order.
 
-    One supplier_order_items row is written per variant (packaging code, or
-    SKU for unlinked items) with the summed quantity and the Azure retail
-    price current at commit time as unit_price. supplier_order_allocations
-    rows tie each variant row back to the customer line items it covers.
+    One supplier_order_items row is written per variant (or per SKU for
+    unlinked items) with the summed quantity and the Azure retail price
+    current at commit time as unit_price. supplier_order_allocations rows tie
+    each variant row back to the customer line items it covers.
 
-    For the azure supplier only line items linked to azure.packaging are
+    For the azure supplier only line items linked to azure.variants are
     recorded; unlinked items are not something Azure can supply. For any
     other supplier name, only the unlinked items are recorded. With
-    packaging_codes, only those codes are recorded (used by quick-order to
+    variant_codes, only those codes are recorded (used by quick-order to
     commit exactly what made it into the cart). Afterwards the purchase list
     shows only demand that arrived since.
     """
     database = database or Database()
     nothing = {"supplier_order_id": 0, "line_items": 0, "units": 0, "total_cost": 0}
 
-    if packaging_codes is not None:
-        if not packaging_codes:
-            logger.info("No packaging codes to commit")
+    if variant_codes is not None:
+        if not variant_codes:
+            logger.info("No variant codes to commit")
             return nothing
-        item_filter = sql.SQL("pd.packaging_code = ANY(%(codes)s)")
+        item_filter = sql.SQL("pd.variant_code = ANY(%(codes)s)")
     elif supplier == AZURE:
-        item_filter = sql.SQL("pd.packaging_code IS NOT NULL")
+        item_filter = sql.SQL("pd.variants_id IS NOT NULL")
     else:
-        item_filter = sql.SQL("pd.packaging_code IS NULL")
+        item_filter = sql.SQL("pd.variants_id IS NULL")
 
     with database.connection() as conn:
         with conn.cursor() as curs:
@@ -79,24 +79,24 @@ def commit_supplier_order(
                 {"supplier": supplier, "notes": notes},
             )
             supplier_order_id = curs.fetchone()[0]
-            params = {"supplier_order_id": supplier_order_id, "codes": packaging_codes}
+            params = {"supplier_order_id": supplier_order_id, "codes": variant_codes}
 
             curs.execute(
                 sql.SQL(
                     """
                     INSERT INTO azure.supplier_order_items (
-                        supplier_orders_id, packaging_code, sku, quantity, unit_price
+                        supplier_orders_id, variants_id, sku, quantity, unit_price
                     )
                     SELECT %(supplier_order_id)s
-                      , pd.packaging_code
+                      , pd.variants_id
                       , pd.sku
                       , sum(pd.outstanding)
                       , cp.retail_dollars::numeric(12, 2)
                     FROM azure.purchase_demand pd
-                    LEFT JOIN azure.current_prices cp ON cp.packaging_code = pd.packaging_code
+                    LEFT JOIN azure.current_prices cp ON cp.variants_id = pd.variants_id
                     WHERE pd.outstanding > 0
                       AND {item_filter}
-                    GROUP BY pd.packaging_code, pd.sku, cp.retail_dollars
+                    GROUP BY pd.variants_id, pd.sku, cp.retail_dollars
                     RETURNING quantity, unit_price
                     """
                 ).format(item_filter=item_filter),
@@ -122,7 +122,7 @@ def commit_supplier_order(
                     FROM azure.purchase_demand pd
                     JOIN azure.supplier_order_items soi
                       ON soi.supplier_orders_id = %(supplier_order_id)s
-                     AND soi.packaging_code IS NOT DISTINCT FROM pd.packaging_code
+                     AND soi.variants_id IS NOT DISTINCT FROM pd.variants_id
                      AND soi.sku IS NOT DISTINCT FROM pd.sku
                     WHERE pd.outstanding > 0
                       AND {item_filter}

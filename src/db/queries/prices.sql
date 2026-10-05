@@ -1,15 +1,16 @@
--- Full price history per packaging code
+-- Full price history per variant
 SELECT
     pr.id
-    , pr.packaging_code
+    , pr.variants_id
+    , v.code AS variant_code
     , p.name AS product_name
-    , pk.size
+    , v.size
     , pr.retail_dollars
     , pr.retail_unit
     , pr.wholesale_dollars
     , pr.wholesale_unit
     , pr.created_at
 FROM azure.prices pr
-JOIN azure.packaging pk ON pk.code = pr.packaging_code
-JOIN azure.products p ON p.id = pk.products_id
-ORDER BY pr.packaging_code, pr.created_at DESC
+JOIN azure.variants v ON v.id = pr.variants_id
+JOIN azure.products p ON p.id = v.products_id
+ORDER BY pr.variants_id, pr.created_at DESC

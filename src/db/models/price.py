@@ -10,7 +10,7 @@ class PriceModel(BaseModel):
     """Pydantic model for the `azure.prices` table"""
 
     id: int
-    packaging_code: str
+    variants_id: int
     retail_dollars: Optional[float] = None
     retail_unit: Optional[str] = None
     wholesale_dollars: Optional[float] = None

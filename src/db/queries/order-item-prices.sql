@@ -2,7 +2,7 @@
 SELECT o.name as order_name
   , sku
   --, title
-  , i.packaging_code as variant_code
+  , v.code as variant_code
   , variant_title
   , current_quantity
   , original_unit_price
@@ -11,6 +11,7 @@ SELECT o.name as order_name
   , wholesale_dollars
   FROM azure.order_items i
   JOIN azure.orders o ON (o.id = i.orders_id)
-  LEFT JOIN azure.current_prices p ON (p.packaging_code = i.packaging_code)
+  LEFT JOIN azure.variants v ON (v.id = i.variants_id)
+  LEFT JOIN azure.current_prices p ON (p.variants_id = i.variants_id)
   WHERE o.name = '#2553'
   ORDER BY 1, 2
